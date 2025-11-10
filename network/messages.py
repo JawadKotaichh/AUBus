@@ -1,5 +1,5 @@
 import enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, TypedDict
 
 
 class msg_type(enum.IntEnum):
@@ -37,10 +37,10 @@ class msg_status(enum.IntEnum):
     ALREADY_EXISTS = 7
 
 
-class Message:
-    mesage_id: int
+class Msg(TypedDict, total=False):
     type: msg_type
-    status: Optional[msg_status] = None
+    seq: int  # client-chosen sequence number
+    status: msg_status
     payload: Dict[str, Any]
 
     def __init__(self, type: msg_type, status: msg_status, payload: Dict[str, Any]):
