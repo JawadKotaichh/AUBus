@@ -7,9 +7,14 @@ import hmac
 import json
 import os
 import sqlite3
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _AUB_DOMAIN = "@aub.edu.lb"
+
+try:  # allow both package and script-style imports
+    from trip_repository import TripRepository
+except ImportError:  # pragma: no cover
+    from .trip_repository import TripRepository  # type: ignore
 
 # ---- password hashing (never store plain passwords) ----
 _SALT_BYTES = 16
@@ -86,7 +91,13 @@ class AUBusDB:
       number_of_rates (>= 0),
       driver_rating_avg (0..5),
       rider_driving_avg (0..5),
+      rider_rating_count (>= 0),
       zone, schedule (JSON text), is_available (0/1)
+
+    Trips columns:
+      id, rider_id (FK users), driver_id (FK users), departure_loc,
+      comment_trip, driver_rating (rider->driver), rider_rating (driver->rider),
+      created_at (ISO 8601 string)
     """
 
     def __init__(self, path: str = "aubus.db") -> None:
@@ -96,6 +107,13 @@ class AUBusDB:
         self.conn.execute("PRAGMA journal_mode = WAL;")
         self.conn.execute("PRAGMA busy_timeout = 5000;")
         self._supports_returning = _sqlite_version_tuple(self.conn) >= (3, 35, 0)
+        self.trip_repo = TripRepository(
+            self.conn,
+            insert_and_get_id=self._insert_and_get_id,
+            validate_rating=self._validate_rating,
+            rate_driver=self.rate_driver,
+            rate_rider=self.rate_rider,
+        )
 
     def close(self) -> None:
         self.conn.close()
@@ -116,6 +134,7 @@ class AUBusDB:
                 number_of_rates     INTEGER NOT NULL DEFAULT 0 CHECK (number_of_rates >= 0),
                 driver_rating_avg   REAL    NOT NULL DEFAULT 0.0 CHECK (driver_rating_avg BETWEEN 0 AND 5),
                 rider_driving_avg   REAL    NOT NULL DEFAULT 0.0 CHECK (rider_driving_avg BETWEEN 0 AND 5),
+                rider_rating_count  INTEGER NOT NULL DEFAULT 0 CHECK (rider_rating_count >= 0),
                 zone                TEXT    NOT NULL,
                 schedule            TEXT    NOT NULL DEFAULT '{}',
                 is_available        INTEGER NOT NULL DEFAULT 0 CHECK (is_available IN (0,1))
@@ -128,12 +147,46 @@ class AUBusDB:
                 ON users(is_driver);
             """
         )
+        self._ensure_users_columns()
+        self.trip_repo.create_schema()
+
+    def _table_columns(self, table: str) -> Set[str]:
+        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    def _ensure_users_columns(self) -> None:
+        columns = self._table_columns("users")
+        if "rider_rating_count" not in columns:
+            self.conn.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN rider_rating_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (rider_rating_count >= 0)
+                """
+            )
 
     # ---------- validators / helpers ----------
     @staticmethod
-    def _validate_email(aub_email: str) -> None:
-        if not aub_email or _AUB_DOMAIN not in aub_email.lower():
+    def _validate_email(aub_email: str) -> str:
+        normalized = aub_email.strip().lower()
+        if not normalized or normalized.count("@") != 1 or not normalized.endswith(
+            _AUB_DOMAIN
+        ):
             raise ValueError(f"aub_email must end with {_AUB_DOMAIN}")
+        return normalized
+
+    @staticmethod
+    def _validate_zone(zone: str) -> str:
+        cleaned = zone.strip()
+        if not cleaned:
+            raise ValueError("zone cannot be empty")
+        return cleaned
+
+    @staticmethod
+    def _validate_rating(value: float, field: str) -> float:
+        if not (0.0 <= value <= 5.0):
+            raise ValueError(f"{field} must be between 0 and 5")
+        return float(value)
 
     @staticmethod
     def _schedule_to_text(schedule: Dict[str, Any] | str | None) -> str:
@@ -187,11 +240,12 @@ class AUBusDB:
         Creates a user and returns its integer id.
         Raises ValueError on constraint violations.
         """
-        self._validate_email(aub_email)
+        normalized_email = self._validate_email(aub_email)
         if is_driver not in (0, 1) or is_available not in (0, 1):
             raise ValueError("is_driver and is_available must be 0 or 1")
         if not username or not name:
             raise ValueError("username and name are required")
+        zone_clean = self._validate_zone(zone)
 
         sched_text = self._schedule_to_text(schedule)
         salt_b64, hash_b64 = hash_password(password_plain)
@@ -200,19 +254,20 @@ class AUBusDB:
             INSERT INTO users (
                 aub_email, username, password_hash, password_salt, name,
                 is_driver, number_of_rates, driver_rating_avg, rider_driving_avg,
+                rider_rating_count,
                 zone, schedule, is_available
             )
-            VALUES (?, ?, ?, ?, ?, ?, 0, 0.0, 0.0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0.0, 0.0, 0, ?, ?, ?)
         """.strip()
 
         params: Tuple[Any, ...] = (
-            aub_email.lower(),
+            normalized_email,
             username,
             hash_b64,
             salt_b64,
             name,
             int(is_driver),
-            zone,
+            zone_clean,
             sched_text,
             int(is_available),
         )
@@ -262,11 +317,10 @@ class AUBusDB:
         )
 
     def update_zone(self, user_id: int, zone: str) -> None:
-        if not zone:
-            raise ValueError("zone cannot be empty")
+        zone_clean = self._validate_zone(zone)
         self.conn.execute(
             "UPDATE users SET zone = ? WHERE id = ?",
-            (zone, int(user_id)),
+            (zone_clean, int(user_id)),
         )
 
     def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
@@ -296,10 +350,45 @@ class AUBusDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def search_drivers(
+        self,
+        *,
+        min_rating: Optional[float] = None,
+        username: Optional[str] = None,
+        zone: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        sql = [
+            """
+            SELECT id, name, aub_email, username, driver_rating_avg, number_of_rates,
+                   zone, is_available
+            FROM users
+            WHERE is_driver = 1
+            """
+        ]
+        params: List[Any] = []
+
+        if min_rating is not None:
+            sql.append("AND driver_rating_avg >= ?")
+            params.append(self._validate_rating(float(min_rating), "min_rating"))
+
+        if username:
+            sql.append("AND username LIKE ?")
+            params.append(f"%{username.strip()}%")
+
+        if zone:
+            sql.append("AND zone = ?")
+            params.append(zone.strip())
+
+        sql.append(
+            "ORDER BY driver_rating_avg DESC, number_of_rates DESC, is_available DESC, id ASC"
+        )
+
+        rows = self.conn.execute(" ".join(sql), params).fetchall()
+        return [dict(r) for r in rows]
+
     # Update driver rating atomically (simple running average)
     def rate_driver(self, user_id: int, rating: float) -> None:
-        if not (0.0 <= rating <= 5.0):
-            raise ValueError("rating must be between 0 and 5")
+        rating = self._validate_rating(rating, "driver rating")
         self.conn.execute(
             """
             UPDATE users
@@ -316,6 +405,73 @@ class AUBusDB:
             (rating, rating, int(user_id)),
         )
 
+    def rate_rider(self, user_id: int, rating: float) -> None:
+        rating = self._validate_rating(rating, "rider rating")
+        self.conn.execute(
+            """
+            UPDATE users
+            SET
+                rider_driving_avg =
+                    CASE
+                        WHEN rider_rating_count = 0
+                            THEN CAST(? AS REAL)
+                        ELSE (rider_driving_avg * rider_rating_count + CAST(? AS REAL)) / (rider_rating_count + 1)
+                    END,
+                rider_rating_count = rider_rating_count + 1
+            WHERE id = ?
+            """,
+            (rating, rating, int(user_id)),
+        )
+
+    def update_password(self, user_id: int, new_password_plain: str) -> None:
+        salt_b64, hash_b64 = hash_password(new_password_plain)
+        self.conn.execute(
+            """
+            UPDATE users
+            SET password_hash = ?, password_salt = ?
+            WHERE id = ?
+            """,
+            (hash_b64, salt_b64, int(user_id)),
+        )
+
+    def delete_user(self, user_id: int) -> None:
+        self.conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
+
+    # Trip operations delegate to TripRepository to keep this module focused
+    def record_trip(
+        self,
+        *,
+        rider_id: int,
+        driver_id: int,
+        departure_loc: str,
+        comment_trip: str = "",
+        driver_rating: Optional[float] = None,
+        rider_rating: Optional[float] = None,
+    ) -> int:
+        return self.trip_repo.record_trip(
+            rider_id=rider_id,
+            driver_id=driver_id,
+            departure_loc=departure_loc,
+            comment_trip=comment_trip,
+            driver_rating=driver_rating,
+            rider_rating=rider_rating,
+        )
+
+    def set_trip_ratings(
+        self,
+        trip_id: int,
+        *,
+        driver_rating: Optional[float] = None,
+        rider_rating: Optional[float] = None,
+    ) -> None:
+        self.trip_repo.set_trip_ratings(
+            trip_id,
+            driver_rating=driver_rating,
+            rider_rating=rider_rating,
+        )
+
+    def get_trip(self, trip_id: int) -> Optional[Dict[str, Any]]:
+        return self.trip_repo.get_trip(trip_id)
 
 if __name__ == "__main__":
     # quick smoke test
