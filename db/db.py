@@ -28,7 +28,7 @@ class Sessions(Base):
 
 def main():
     # Use an in-memory DB so we don't touch AUBus.db
-    engine = create_engine("sqlite:///:memory:", echo=False, future=True)
+    engine = create_engine("sqlite:///AUBus.db", future=True)
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine, future=True)
     session = SessionLocal()
