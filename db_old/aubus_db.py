@@ -169,8 +169,10 @@ class AUBusDB:
     @staticmethod
     def _validate_email(aub_email: str) -> str:
         normalized = aub_email.strip().lower()
-        if not normalized or normalized.count("@") != 1 or not normalized.endswith(
-            _AUB_DOMAIN
+        if (
+            not normalized
+            or normalized.count("@") != 1
+            or not normalized.endswith(_AUB_DOMAIN)
         ):
             raise ValueError(f"aub_email must end with {_AUB_DOMAIN}")
         return normalized
@@ -350,42 +352,6 @@ class AUBusDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def search_drivers(
-        self,
-        *,
-        min_rating: Optional[float] = None,
-        username: Optional[str] = None,
-        zone: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        sql = [
-            """
-            SELECT id, name, aub_email, username, driver_rating_avg, number_of_rates,
-                   zone, is_available
-            FROM users
-            WHERE is_driver = 1
-            """
-        ]
-        params: List[Any] = []
-
-        if min_rating is not None:
-            sql.append("AND driver_rating_avg >= ?")
-            params.append(self._validate_rating(float(min_rating), "min_rating"))
-
-        if username:
-            sql.append("AND username LIKE ?")
-            params.append(f"%{username.strip()}%")
-
-        if zone:
-            sql.append("AND zone = ?")
-            params.append(zone.strip())
-
-        sql.append(
-            "ORDER BY driver_rating_avg DESC, number_of_rates DESC, is_available DESC, id ASC"
-        )
-
-        rows = self.conn.execute(" ".join(sql), params).fetchall()
-        return [dict(r) for r in rows]
-
     # Update driver rating atomically (simple running average)
     def rate_driver(self, user_id: int, rating: float) -> None:
         rating = self._validate_rating(rating, "driver rating")
@@ -472,6 +438,7 @@ class AUBusDB:
 
     def get_trip(self, trip_id: int) -> Optional[Dict[str, Any]]:
         return self.trip_repo.get_trip(trip_id)
+
 
 if __name__ == "__main__":
     # quick smoke test
