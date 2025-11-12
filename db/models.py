@@ -1,11 +1,6 @@
-from sqlalchemy.orm import DeclarativeBase
 import enum
 from dataclasses import dataclass
 from typing import Optional
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 class db_msg_type(enum.IntEnum):
@@ -13,6 +8,7 @@ class db_msg_type(enum.IntEnum):
     SCHEDULE_CREATED = 2
     SESSION_CREATED = 3
     TRIP_CREATED = 4
+    TYPE_CHECK = 5
 
 
 class db_msg_status(enum.IntEnum):
