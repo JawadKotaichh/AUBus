@@ -1,9 +1,11 @@
 from __future__ import annotations
-import base64, hashlib, hmac, os, sqlite3
-from typing import Tuple
+import base64, hashlib, hmac, os
+from typing import Tuple, Mapping
 from enum import Enum
 from db_connection import DB_CONNECTION
 from models import db_msg_type, db_msg_status, Message
+from schedules import update_schedule as update_schedule_entry
+from schedules import ScheduleDay
 
 
 # ==============================
@@ -98,9 +100,7 @@ class User_Fields(Enum):
 
 class UserExceptions(Exception):
     def __init__(self, where, reason, value=None):
-        self.where = where
-        self.reason = reason
-        msg = f"{self.where}: {reason}"
+        msg = f"{where}: {reason}"
         if value is not None:
             msg += f" (got: {value})"
         super().__init__(msg)
@@ -109,7 +109,6 @@ class UserExceptions(Exception):
 # ==============================
 # USER DATABASE FUNCTIONS
 # ==============================
-
 def create_user(
     name,
     username,
@@ -121,7 +120,7 @@ def create_user(
     avg_rating_rider: float = 0.0,
     number_of_rides_driver: int = 0,
     number_of_rides_rider: int = 0,
-) 
+):
     """Create a new user and insert into DB."""
     try:
         conn = DB_CONNECTION
@@ -145,9 +144,12 @@ def create_user(
         )
         conn.commit()
         user_id = cur.lastrowid
-        return Tuple(Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"User created with ID {user_id}."),user_id)
+        return (
+            Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"User created with ID {user_id}."),
+            user_id,
+        )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e)), None
 
 
 def authenticate(username: str, password: str) -> Message:
@@ -208,15 +210,31 @@ def update_email(user_id: int, new_email: str) -> Message:
         return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def update_schedule(user_id: int, new_schedule_id) -> Message:
-    if not new_schedule_id:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Invalid schedule ID.")
+def update_user_schedule(
+    user_id: int,
+    days: Mapping[str, "ScheduleDay"] | None = None
+) -> Message:
+    """Fetch user's schedule_id and update it via schedule system."""
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
-        cur.execute('''UPDATE users SET schedule_id=? WHERE id=?''', (new_schedule_id, user_id))
-        conn.commit()
-        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"Schedule updated to {new_schedule_id}.")
+        cur.execute('''SELECT schedule_id FROM users WHERE id=?''', (user_id,))
+        row = cur.fetchone()
+
+        if not row:
+            return Message(db_msg_type.ERROR, db_msg_status.NOT_FOUND, "User not found.")
+
+        schedule_id = row[0]
+        if not schedule_id:
+            return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "User has no schedule assigned.")
+
+        # Call external schedule updater
+        schedule_result = update_schedule_entry(schedule_id=schedule_id, days=days)
+
+        if isinstance(schedule_result, Message):
+            return schedule_result
+        else:
+            return Message(db_msg_type.SCHEDULE_CREATED, db_msg_status.OK, "Schedule updated successfully.")
     except Exception as e:
         return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
