@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import os
 from typing import Tuple, Mapping
-from enum import Enum
 from db_connection import DB_CONNECTION
 from models import db_msg_type, db_msg_status, Message
 from schedules import update_schedule as update_schedule_entry
@@ -95,27 +94,6 @@ def creating_initial_db() -> Message:
         return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-# ==============================
-# ENUMS & EXCEPTIONS
-# ==============================
-class User_Fields(Enum):
-    username = 0
-    email = 1
-    password = 2
-    schedule = 3
-
-
-class UserExceptions(Exception):
-    def __init__(self, where, reason, value=None):
-        msg = f"{where}: {reason}"
-        if value is not None:
-            msg += f" (got: {value})"
-        super().__init__(msg)
-
-
-# ==============================
-# USER DATABASE FUNCTIONS
-# ==============================
 def create_user(
     name,
     username,
