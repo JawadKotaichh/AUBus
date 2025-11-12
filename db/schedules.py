@@ -167,11 +167,6 @@ def create_schedule(*, days: Mapping[str, ScheduleDay] | None = None) -> int:
     return int(cur.lastrowid)
 
 
-def _user_exists(user_id: int) -> bool:
-    cur = DB_CONNECTION.execute("SELECT 1 FROM users WHERE id = ?", (user_id,))
-    return cur.fetchone() is not None
-
-
 def _schedule_exists(schedule_id: int) -> bool:
     cur = DB_CONNECTION.execute("SELECT 1 FROM schedule WHERE id = ?", (schedule_id,))
     return cur.fetchone() is not None
@@ -180,7 +175,6 @@ def _schedule_exists(schedule_id: int) -> bool:
 def update_schedule(
     *,
     schedule_id: int,
-    user_id: int,
     days: Mapping[str, ScheduleDay] | None = None,
 ) -> Message:
     """
@@ -189,13 +183,6 @@ def update_schedule(
     - Verifies the schedule row exists.
     - Only updates the days provided in `days` (others remain unchanged).
     """
-    # --- user present? ---
-    if not _user_exists(user_id):
-        return Message(
-            type=db_msg_type.ERROR,
-            status=db_msg_status.NOT_FOUND,
-            payload=f"User not found: user_id={user_id}",
-        )
 
     if not _schedule_exists(schedule_id):
         return Message(
