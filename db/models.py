@@ -9,6 +9,7 @@ class db_msg_type(enum.IntEnum):
     SESSION_CREATED = 3
     TRIP_CREATED = 4
     TYPE_CHECK = 5
+    SCHEDULE_UPDATED = 6
 
 
 class db_msg_status(enum.IntEnum):

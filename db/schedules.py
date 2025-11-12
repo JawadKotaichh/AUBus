@@ -266,7 +266,7 @@ def update_schedule(
 
     # If you have a SCHEDULE_UPDATED type, use it; else keep SCHEDULE_CREATED.
     return Message(
-        type=getattr(db_msg_type, "SCHEDULE_UPDATED", db_msg_type.SCHEDULE_CREATED),
+        type=db_msg_type.SCHEDULE_UPDATED,
         status=db_msg_status.OK,
         payload=f"Schedule {schedule_id} updated successfully.",
     )
