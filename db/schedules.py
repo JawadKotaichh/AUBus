@@ -1,12 +1,30 @@
-from datetime import datetime
-from typing import Optional, Tuple
-from sqlalchemy import DateTime
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.orm import composite
+from __future__ import annotations
 from dataclasses import dataclass
-from sqlalchemy import CheckConstraint
+from datetime import datetime
+from pathlib import Path
+import sqlite3
+from typing import Optional
 from models import Base
 from models import Message, db_msg_type, db_msg_status
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+
+def get_sqlite_connection() -> sqlite3.Connection:
+    db_url = os.getenv("DB_URL")
+    if db_url and db_url.startswith("sqlite:///"):
+        db_path = Path(db_url.replace("sqlite:///", "", 1))
+    else:
+        db_path = Path(os.getenv("DB_PATH", "AUBus.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db_path), detect_types=sqlite3.PARSE_DECLTYPES)
+    con.execute("PRAGMA foreign_keys = ON")
+    return con
+
+
+DB_CONNECTION = get_sqlite_connection()
 
 
 @dataclass(frozen=True)
@@ -14,11 +32,7 @@ class ScheduleDay:
     departure_time: Optional[datetime]
     return_time: Optional[datetime]
 
-    def __composite_values__(self) -> Tuple[Optional[datetime], Optional[datetime]]:
-        return (self.departure_time, self.return_time)
-
     def __bool__(self) -> bool:
-        """True if day has both times set."""
         return self.departure_time is not None and self.return_time is not None
 
 
@@ -27,6 +41,35 @@ def day_check(dep_col: str, ret_col: str) -> str:
         f"(({dep_col} IS NULL AND {ret_col} IS NULL) OR "
         f"({dep_col} IS NOT NULL AND {ret_col} IS NOT NULL AND {ret_col} > {dep_col}))"
     )
+
+
+def init_schema_schedule() -> None:
+    checks = ",\n".join(
+        f"CHECK({day_check(dep, ret)}) /* ck_{day} */"
+        for day, (dep, ret) in DAY_TO_ATTR.items()
+    )
+
+    DB_CONNECTION.executescript(f"""
+    CREATE TABLE IF NOT EXISTS schedule (
+        id INTEGER PRIMARY KEY,
+        Monday_departure_time   DATETIME NULL,
+        Monday_return_time      DATETIME NULL,
+        Tuesday_departure_time  DATETIME NULL,
+        Tuesday_return_time     DATETIME NULL,
+        Wednesday_departure_time DATETIME NULL,
+        Wednesday_return_time    DATETIME NULL,
+        Thursday_departure_time  DATETIME NULL,
+        Thursday_return_time     DATETIME NULL,
+        Friday_departure_time    DATETIME NULL,
+        Friday_return_time       DATETIME NULL,
+        Saturday_departure_time  DATETIME NULL,
+        Saturday_return_time     DATETIME NULL,
+        Sunday_departure_time    DATETIME NULL,
+        Sunday_return_time       DATETIME NULL,
+        {checks}j
+    );
+    """)
+    DB_CONNECTION.commit()
 
 
 class Schedule(Base):
@@ -124,15 +167,6 @@ class Schedule(Base):
             day_check("Sunday_departure_time", "Sunday_return_time"), name="ck_sunday"
         ),
     )
-    _NAME_TO_ATTR = {
-        "monday": "Monday",
-        "tuesday": "Tuesday",
-        "wednesday": "Wednesday",
-        "thursday": "Thursday",
-        "friday": "Friday",
-        "saturday": "Saturday",
-        "sunday": "Sunday",
-    }
 
     def set_day(
         self,
@@ -141,7 +175,7 @@ class Schedule(Base):
         return_time: Optional[datetime],
     ) -> Message:
         key = day_name.strip().lower()
-        attr = self._NAME_TO_ATTR.get(key)
+        attr = self._DAY_TO_ATTR.get(key)
         if not attr:
             return Message(
                 type=db_msg_type.ERROR,
@@ -153,7 +187,7 @@ class Schedule(Base):
 
     def get_day(self, day_name: str) -> Optional[ScheduleDay]:
         key = day_name.strip().lower()
-        attr = self._NAME_TO_ATTR.get(key)
+        attr = self._DAY_TO_ATTR.get(key)
         return getattr(self, attr) if attr else None
 
     def clear_day(self, day_name: str) -> Message:
