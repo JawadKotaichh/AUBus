@@ -1,14 +1,15 @@
 from __future__ import annotations
-import sqlite3
-import base64
-import hashlib
-import hmac
+import base64, hashlib, hmac, os, sqlite3
 from typing import Tuple
 from enum import Enum
+from db_connection import DB_CONNECTION
+from models import db_msg_type, db_msg_status, Message
 
 
+# ==============================
+# PASSWORD HASHING
+# ==============================
 class password_hashing:
-    # ---- password hashing (never store plain passwords) ----
     def __init__(self):
         self._SALT_BYTES = 16
         self._SCRYPT_N = 2**14
@@ -16,16 +17,13 @@ class password_hashing:
         self._SCRYPT_P = 1
         self._DKLEN = 32
 
-    def _b64(b: bytes) -> str:
+    def _b64(self, b: bytes) -> str:
         return base64.b64encode(b).decode("ascii")
 
-    def _unb64(s: str) -> bytes:
+    def _unb64(self, s: str) -> bytes:
         return base64.b64decode(s.encode("ascii"))
 
     def hash_password(self, plain: str) -> Tuple[str, str]:
-        """
-        Returns (salt_b64, hash_b64) using scrypt.
-        """
         if not plain:
             raise ValueError("Password cannot be empty.")
         salt = os.urandom(self._SALT_BYTES)
@@ -51,37 +49,46 @@ class password_hashing:
                 p=self._SCRYPT_P,
                 dklen=len(expected),
             )
-            # constant-time compare
             return hmac.compare_digest(h, expected)
         except Exception:
             return False
 
 
-def creating_initial_db():
-    db = sqlite3.connect("AUBus.db")
+# ==============================
+# INITIAL DATABASE CREATION
+# ==============================
+def creating_initial_db() -> Message:
+    try:
+        db = DB_CONNECTION
+        cursor = db.cursor()
+        cursor.executescript(
+            '''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                username TEXT NOT NULL UNIQUE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE CHECK (lower(email) LIKE '%@aub.edu.lb'),
+                schedule_id INTEGER,
+                is_driver INTEGER,
+                avg_rating_driver REAL,
+                avg_rating_rider REAL,
+                number_of_rides_driver INTEGER,
+                number_of_rides_rider INTEGER,
+                FOREIGN KEY (schedule_id) REFERENCES schedules(id)
+            );
+            '''
+        )
+        db.commit()
+        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, "User table created or verified.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
-    cursor = db.cursor()
-    db.executescript("""CREATE TABLE users (
-                     
-                     id INT PRIMARYKEY AUTOINCREMENT,
-                     name TEXT,
-                     username TEXT NON NULL UNIQUE,
-                     password TEXT NON NULL,
-                     email TEXT NON NULL UNIQUE
-                        CHECK (lower(aub_email) LIKE '%@aub.edu.lb'),
-                     schedule_id INT, 
-                     is_driver INT,
-                     avg_rating_driver INT,
-                     avg_rating_rider INT,
-                     number_of_rides_driver INT,
-                     number_of_riders_rider INT,
-                     FOREIGN KEY (schedule_id) REFERENCES schedules(id)
 
-                     
-                     )
-                     """)
-
-
+# ==============================
+# ENUMS & EXCEPTIONS
+# ==============================
 class User_Fields(Enum):
     username = 0
     email = 1
@@ -93,187 +100,203 @@ class UserExceptions(Exception):
     def __init__(self, where, reason, value=None):
         self.where = where
         self.reason = reason
-        msg = self.where + ": " + reason + " (got: " + value + ")"
+        msg = f"{self.where}: {reason}"
+        if value is not None:
+            msg += f" (got: {value})"
         super().__init__(msg)
 
 
-class User:
-    def __init__(
-        self,
-        db: sqlite3.Connection,
-        id,
-        name,
-        username,
-        password,
-        email,
-        is_driver,
-        schedule,
-        avg_rating_driver: int,
-        avg_rating_rider: int,
-        number_of_rides_driver: int,
-        number_of_rides_rider: int,
-    ):
-        self.conn = db
-        self.id = id
-        self.name = name
-        self.username = username
-        self.password = """''HOW TO HASH"""
-        self.email = email
-        self.is_driver = is_driver
-        self.schedule = schedule
-        if bool(is_driver):
-            self.avg_rating_driver = avg_rating_driver
-            self.number_of_rides_driver = number_of_rides_driver
-        self.avg_rating_rider = avg_rating_rider
-        self.number_of_rides_driver = number_of_rides_driver
-        self.number_of_rides_rider = number_of_rides_rider
+# ==============================
+# USER DATABASE FUNCTIONS
+# ==============================
 
-    class UserExceptions(Exception):
-        def __init__(self, where, reason, value=None):
-            self.where = where
-            self.reason = reason
-            msg = self.where + ": " + reason + " (got: " + value + ")"
-            super().__init__(msg)
+def create_user(
+    name,
+    username,
+    password,
+    email,
+    is_driver,
+    schedule,
+    avg_rating_driver: float = 0.0,
+    avg_rating_rider: float = 0.0,
+    number_of_rides_driver: int = 0,
+    number_of_rides_rider: int = 0,
+) 
+    """Create a new user and insert into DB."""
+    try:
+        conn = DB_CONNECTION
+        ph = password_hashing()
+        salt, hash_ = ph.hash_password(password)
 
-    def update_username(self, new_username: str):
-        if not new_username.strip():
-            raise UserExceptions(
-                User_Fields.username.name, "Can't have an empty username"
+        cur = conn.cursor()
+        cur.execute(
+            '''
+            INSERT INTO users (
+                name, username, password_salt, password_hash, email, 
+                schedule_id, is_driver, avg_rating_driver, avg_rating_rider, 
+                number_of_rides_driver, number_of_rides_rider
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                name, username, salt, hash_, email, schedule, is_driver,
+                avg_rating_driver, avg_rating_rider,
+                number_of_rides_driver, number_of_rides_rider
             )
+        )
+        conn.commit()
+        user_id = cur.lastrowid
+        return Tuple(Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"User created with ID {user_id}."),user_id)
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+
+
+def authenticate(username: str, password: str) -> Message:
+    """Authenticate a user by verifying username and password."""
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute(
+            '''SELECT id, password_salt, password_hash FROM users WHERE username=?''',
+            (username,)
+        )
+        row = cur.fetchone()
+
+        if not row:
+            return Message(db_msg_type.ERROR, db_msg_status.NOT_FOUND, "Username not found.")
+
+        user_id, salt_b64, hash_b64 = row
+        ph = password_hashing()
+        if ph.verify_password(password, salt_b64, hash_b64):
+            return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"Authenticated user ID {user_id}.")
         else:
-            self.username = new_username
-            cur = self.conn.cursor()
-            cur.execute(
-                """
-                        UPDATE users
-                        SET username=?
-                        WHERE id=?
+            return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Invalid password.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
-                        """,
-                (new_username, self.id),
-            )
-            self.conn.commit()
 
+def update_username(user_id: int, new_username: str) -> Message:
+    if not new_username.strip():
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Username cannot be empty.")
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''UPDATE users SET username=? WHERE id=?''', (new_username, user_id))
+        conn.commit()
+        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"Username updated to {new_username}.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+
+
+def update_email(user_id: int, new_email: str) -> Message:
     def is_allowed(email: str, domain="@aub.edu.lb") -> bool:
-        dom = email.rpartition("@")[2].lower().rstrip(".")
-        return dom == domain.lower().rstrip(".")
+        return email.lower().endswith(domain)
 
-    def update_email(self, new_email: str):
-        if not new_email.strip():
-            raise UserExceptions(User_Fields.email.name, "Enter a Valid Email Address")
-        elif not self.is_allowed(new_email):
-            ################################################################################################
-            # I STILL HAVE TO HANDLE THE CASE WHERE EMAIL DOESN'T CONTAIN @##########################################
-            #############################################
-            raise UserExceptions(User_Fields.email.name, "Enter an AUB Email")
+    if not new_email.strip():
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Empty email.")
+    if "@" not in new_email:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Email must contain '@'.")
+    if not is_allowed(new_email):
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Not an AUB email.")
 
-        else:
-            self.email = new_email
-            cur = self.conn.cursor()
-            cur.execute(
-                """
-                        UPDATE users
-                        SET email=?
-                        WHERE id=?
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''UPDATE users SET email=? WHERE id=?''', (new_email, user_id))
+        conn.commit()
+        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"Email updated to {new_email}.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
-                        """,
-                (new_email, self.id),
-            )
-            self.conn.commit()
 
-    def update_schedule(self, new_schedule_id: int):
-        if not new_schedule_id:
-            raise UserExceptions(User_Fields.schedule.name, "Enter a valid schedule")
+def update_schedule(user_id: int, new_schedule_id) -> Message:
+    if not new_schedule_id:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Invalid schedule ID.")
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''UPDATE users SET schedule_id=? WHERE id=?''', (new_schedule_id, user_id))
+        conn.commit()
+        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, f"Schedule updated to {new_schedule_id}.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
-        else:
-            cur = self.conn.cursor()
-            cur.execute(
-                """
-                            UPDATE users    
-                            SET schedule_id=?
-                            WHERE id=?
-                            """,
-                (new_schedule_id, self.id),
-            )
-            self.conn.commit()
 
-    ######################################################################
+def update_password(user_id: int, new_password: str) -> Message:
+    if not new_password:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Password cannot be empty.")
+    try:
+        ph = password_hashing()
+        salt, hashed = ph.hash_password(new_password)
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''UPDATE users SET password_salt=?, password_hash=? WHERE id=?''', (salt, hashed, user_id))
+        conn.commit()
+        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, "Password updated successfully.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
-    # COMPUTE THE NEW AVERAGE RATING AFTER IT HAS BEEN EDITED
 
-    #####################################################################
-
-    def adjust_avg_driver(self, latest_rating: int):
-        self.avg_rating_driver = (
-            (self.adjust_avg_driver * self.number_of_rides_driver) + latest_rating
-        ) / (self.number_of_rides_driver + 1)
-        self.number_of_rides_driver += 1
-
-        cur = self.conn.cursor()
+def adjust_avg_driver(user_id: int, latest_rating: int) -> Message:
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''SELECT avg_rating_driver, number_of_rides_driver FROM users WHERE id=?''', (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return Message(db_msg_type.ERROR, db_msg_status.NOT_FOUND, "User not found.")
+        avg_rating_driver, number_of_rides_driver = row
+        new_avg = ((avg_rating_driver * number_of_rides_driver) + latest_rating) / (number_of_rides_driver + 1)
         cur.execute(
-            """
-                        UPDATE users    
-                        SET average_rating_driver=?
-                        SET number_of_rides_driver=?
-                        WHERE id=?
-                        """,
-            (self.avg_rating_driver, self.number_of_rides_driver, self.id),
+            '''UPDATE users SET avg_rating_driver=?, number_of_rides_driver=? WHERE id=?''',
+            (new_avg, number_of_rides_driver + 1, user_id)
         )
-        self.conn.commit()
+        conn.commit()
+        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, "Driver rating updated.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
-    def adjust_avg_rider(self, latest_rating: int):
-        self.avg_rating_rider = (
-            (self.adjust_avg_rider * self.number_of_rides_rider) + latest_rating
-        ) / (self.number_of_rides_rider + 1)
-        self.number_of_rides_rider += 1
 
-        cur = self.conn.cursor()
+def adjust_avg_rider(user_id: int, latest_rating: int) -> Message:
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''SELECT avg_rating_rider, number_of_rides_rider FROM users WHERE id=?''', (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return Message(db_msg_type.ERROR, db_msg_status.NOT_FOUND, "User not found.")
+        avg_rating_rider, number_of_rides_rider = row
+        new_avg = ((avg_rating_rider * number_of_rides_rider) + latest_rating) / (number_of_rides_rider + 1)
         cur.execute(
-            """
-                        UPDATE users    
-                        SET average_rating_rider=?
-                        SET number_of_rides_rider=?
-                        WHERE id=?
-                        """,
-            (self.avg_rating_rider, self.number_of_rides_rider, self.id),
+            '''UPDATE users SET avg_rating_rider=?, number_of_rides_rider=? WHERE id=?''',
+            (new_avg, number_of_rides_rider + 1, user_id)
         )
-        self.conn.commit()
-
-    def get_is_driver(self):
-        return self.is_driver
-
-    def get_trips_driver(self):
-        cur = self.conn.cursor()
-
-        cur.execute(
-            """
-
-                    SELECT *,
-                    FROM trips
-                    WHERE driver_id=?
+        conn.commit()
+        return Message(db_msg_type.SESSION_CREATED, db_msg_status.OK, "Rider rating updated.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-
-                    """,
-            (self.id),
-        )
-
-        return cur.fetchall()  # returns list of tuples
-
-    def get_trips_rider(self):
-        cur = self.conn.cursor()
-
-        cur.execute(
-            """
-
-                    SELECT *,
-                    FROM trips
-                    WHERE rider_id=?
+def get_trips_driver(user_id: int) -> Message:
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''SELECT * FROM trips WHERE driver_id=?''', (user_id,))
+        trips = cur.fetchall()
+        if trips:
+            return Message(db_msg_type.TRIP_CREATED, db_msg_status.OK, str(trips))
+        return Message(db_msg_type.TRIP_CREATED, db_msg_status.NOT_FOUND, "No driver trips found.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-
-                    """,
-            (self.id),
-        )
-
-        return cur.fetchall()  # returns list of tuples
+def get_trips_rider(user_id: int) -> Message:
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute('''SELECT * FROM trips WHERE rider_id=?''', (user_id,))
+        trips = cur.fetchall()
+        if trips:
+            return Message(db_msg_type.TRIP_CREATED, db_msg_status.OK, str(trips))
+        return Message(db_msg_type.TRIP_CREATED, db_msg_status.NOT_FOUND, "No rider trips found.")
+    except Exception as e:
+        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))

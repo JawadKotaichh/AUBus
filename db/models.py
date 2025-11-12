@@ -1,11 +1,10 @@
-from sqlalchemy.orm import DeclarativeBase
+
 import enum
 from dataclasses import dataclass
 from typing import Optional
 
 
-class Base(DeclarativeBase):
-    pass
+
 
 
 class db_msg_type(enum.IntEnum):
