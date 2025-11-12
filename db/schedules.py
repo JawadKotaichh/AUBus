@@ -1,30 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-import sqlite3
 from typing import Optional
 from models import Base
 from models import Message, db_msg_type, db_msg_status
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
-
-def get_sqlite_connection() -> sqlite3.Connection:
-    db_url = os.getenv("DB_URL")
-    if db_url and db_url.startswith("sqlite:///"):
-        db_path = Path(db_url.replace("sqlite:///", "", 1))
-    else:
-        db_path = Path(os.getenv("DB_PATH", "AUBus.db"))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path), detect_types=sqlite3.PARSE_DECLTYPES)
-    con.execute("PRAGMA foreign_keys = ON")
-    return con
-
-
-DB_CONNECTION = get_sqlite_connection()
+from db_connection import DB_CONNECTION
 
 
 @dataclass(frozen=True)
