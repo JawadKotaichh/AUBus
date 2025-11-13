@@ -7,9 +7,11 @@ class db_msg_type(enum.IntEnum):
     ERROR = 1
     SCHEDULE_CREATED = 2
     SESSION_CREATED = 3
-    TRIP_CREATED = 4
+    RIDE_CREATED = 4
     TYPE_CHECK = 5
     SCHEDULE_UPDATED = 6
+    RIDE_UPDATED = 7
+    RIDE_DELETED = 8
 
 
 class db_msg_status(enum.IntEnum):

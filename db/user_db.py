@@ -6,8 +6,13 @@ import os
 from typing import Tuple, Mapping
 from db_connection import DB_CONNECTION
 from models import db_msg_type, db_msg_status, Message
-from schedules import update_schedule as update_schedule_entry
-from schedules import ScheduleDay
+from schedules import (
+    ScheduleDay,
+    update_schedule as update_schedule_entry,
+    init_schema_schedule,
+)
+from ride import init_ride_schema
+from user_sessions import init_user_sessions_schema
 
 
 # ==============================
@@ -74,16 +79,22 @@ def creating_initial_db() -> Message:
                 password_salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE CHECK (lower(email) LIKE '%@aub.edu.lb'),
+                area TEXT NOT NULL CHECK (length(trim(area)) > 0),
                 schedule_id INTEGER,
                 is_driver INTEGER,
                 avg_rating_driver REAL,
                 avg_rating_rider REAL,
                 number_of_rides_driver INTEGER,
                 number_of_rides_rider INTEGER,
-                FOREIGN KEY (schedule_id) REFERENCES schedules(id)
+                FOREIGN KEY (schedule_id) REFERENCES schedule(id)
             );
+            CREATE INDEX IF NOT EXISTS idx_users_area ON users(area);
+            CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
             """
         )
+        init_schema_schedule()
+        init_ride_schema()
+        init_user_sessions_schema()
         db.commit()
         return Message(
             db_msg_type.SESSION_CREATED,
@@ -95,11 +106,12 @@ def creating_initial_db() -> Message:
 
 
 def create_user(
-    name,
-    username,
-    password,
-    email,
-    is_driver,
+    name: str,
+    username: str,
+    password: str,
+    email: str,
+    area: str,
+    is_driver: int,
     schedule,
     avg_rating_driver: float = 0.0,
     avg_rating_rider: float = 0.0,
@@ -108,6 +120,16 @@ def create_user(
 ):
     """Create a new user and insert into DB."""
     try:
+        cleaned_area = (area or "").strip()
+        if not cleaned_area:
+            return (
+                Message(
+                    db_msg_type.ERROR,
+                    db_msg_status.INVALID_INPUT,
+                    "Area is required for every user.",
+                ),
+                None,
+            )
         conn = DB_CONNECTION
         ph = password_hashing()
         salt, hash_ = ph.hash_password(password)
@@ -116,10 +138,10 @@ def create_user(
         cur.execute(
             """
             INSERT INTO users (
-                name, username, password_salt, password_hash, email, 
+                name, username, password_salt, password_hash, email, area,
                 schedule_id, is_driver, avg_rating_driver, avg_rating_rider, 
                 number_of_rides_driver, number_of_rides_rider
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -127,6 +149,7 @@ def create_user(
                 salt,
                 hash_,
                 email,
+                cleaned_area,
                 schedule,
                 is_driver,
                 avg_rating_driver,
@@ -351,31 +374,31 @@ def adjust_avg_rider(user_id: int, latest_rating: int) -> Message:
         return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def get_trips_driver(user_id: int) -> Message:
+def get_rides_driver(user_id: int) -> Message:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
-        cur.execute("""SELECT * FROM trips WHERE driver_id=?""", (user_id,))
-        trips = cur.fetchall()
-        if trips:
-            return Message(db_msg_type.TRIP_CREATED, db_msg_status.OK, str(trips))
+        cur.execute("""SELECT * FROM rides WHERE driver_id=?""", (user_id,))
+        rides = cur.fetchall()
+        if rides:
+            return Message(db_msg_type.RIDE_CREATED, db_msg_status.OK, str(rides))
         return Message(
-            db_msg_type.TRIP_CREATED, db_msg_status.NOT_FOUND, "No driver trips found."
+            db_msg_type.RIDE_CREATED, db_msg_status.NOT_FOUND, "No driver rides found."
         )
     except Exception as e:
         return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def get_trips_rider(user_id: int) -> Message:
+def get_rides_rider(user_id: int) -> Message:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
-        cur.execute("""SELECT * FROM trips WHERE rider_id=?""", (user_id,))
-        trips = cur.fetchall()
-        if trips:
-            return Message(db_msg_type.TRIP_CREATED, db_msg_status.OK, str(trips))
+        cur.execute("""SELECT * FROM rides WHERE rider_id=?""", (user_id,))
+        rides = cur.fetchall()
+        if rides:
+            return Message(db_msg_type.RIDE_CREATED, db_msg_status.OK, str(rides))
         return Message(
-            db_msg_type.TRIP_CREATED, db_msg_status.NOT_FOUND, "No rider trips found."
+            db_msg_type.RIDE_CREATED, db_msg_status.NOT_FOUND, "No rider rides found."
         )
     except Exception as e:
         return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
