@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import sqlite3
 
 from db_connection import DB_CONNECTION
-from models import Server_DB_Message, db_msg_status, db_msg_type
+from DB.protocol_db_server import Server_DB_Message, db_msg_status, db_msg_type
 
 
 class RideStatus(str, enum.Enum):

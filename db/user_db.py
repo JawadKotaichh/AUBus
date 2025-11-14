@@ -5,7 +5,7 @@ import hmac
 import os
 from typing import Tuple, Mapping
 from db_connection import DB_CONNECTION
-from models import db_msg_type, db_msg_status, Server_DB_Message
+from DB.protocol_db_server import db_msg_type, db_msg_status, Server_DB_Message
 from schedules import (
     ScheduleDay,
     update_schedule as update_schedule_entry,

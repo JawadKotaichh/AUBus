@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 import sqlite3
 from typing import Iterable, Mapping, Optional, Tuple, Dict
-from models import Server_DB_Message, db_msg_type, db_msg_status
+from DB.protocol_db_server import Server_DB_Message, db_msg_type, db_msg_status
 from db_connection import DB_CONNECTION
 
 
