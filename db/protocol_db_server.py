@@ -12,6 +12,12 @@ class db_msg_type(enum.IntEnum):
     SCHEDULE_UPDATED = 6
     RIDE_UPDATED = 7
     RIDE_DELETED = 8
+    USER_CREATED=9
+    USER_UPDATED=10
+    USER_AUTHENTICATED=11
+    RIDES_FOUND=12
+    RATING_UPDATED=13
+
 
 
 class db_msg_status(enum.IntEnum):
