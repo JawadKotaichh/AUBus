@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import secrets
 import sqlite3
 from typing import Optional
 
@@ -30,7 +31,9 @@ def init_user_sessions_schema() -> None:
     DB_CONNECTION.commit()
 
 
-def _validate_endpoint(ip: Optional[str], port_number: Optional[int]) -> Optional[Message]:
+def _validate_endpoint(
+    ip: Optional[str], port_number: Optional[int]
+) -> Optional[Message]:
     if ip is not None:
         try:
             ipaddress.ip_address(ip)
@@ -49,21 +52,20 @@ def _validate_endpoint(ip: Optional[str], port_number: Optional[int]) -> Optiona
     return None
 
 
-def upsert_session(
+def _generate_session_token(nbytes: int = 32) -> str:
+    """Return a cryptographically strong session identifier."""
+    return secrets.token_urlsafe(nbytes)
+
+
+def insert_session(
     *,
     user_id: int,
-    session_token: str,
+    session_token: Optional[str] = None,
     ip: Optional[str],
     port_number: Optional[int],
 ) -> Message:
-    """Insert or refresh a session entry for a user."""
-    token = (session_token or "").strip()
-    if not token:
-        return Message(
-            type=db_msg_type.ERROR,
-            status=db_msg_status.INVALID_INPUT,
-            payload="session_token cannot be empty.",
-        )
+    """Insert or refresh a session entry for a user, auto-generating tokens when needed."""
+    token = (session_token or "").strip() or _generate_session_token()
 
     validation_error = _validate_endpoint(ip, port_number)
     if validation_error:
@@ -86,7 +88,7 @@ def upsert_session(
         return Message(
             type=db_msg_type.SESSION_CREATED,
             status=db_msg_status.OK,
-            payload="Session stored successfully.",
+            payload=json.dumps({"session_token": token}),
         )
     except sqlite3.Error as exc:
         return Message(
