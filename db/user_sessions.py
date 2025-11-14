@@ -57,7 +57,7 @@ def _generate_session_token(nbytes: int = 32) -> str:
     return secrets.token_urlsafe(nbytes)
 
 
-def insert_session(
+def create_session(
     *,
     user_id: int,
     session_token: Optional[str] = None,
