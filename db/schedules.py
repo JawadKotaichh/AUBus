@@ -1,8 +1,8 @@
 from __future__ import annotations
 from datetime import datetime
 import sqlite3
-from typing import Iterable, Mapping, Optional, Tuple, Dict
-from DB.protocol_db_server import Server_DB_Message, db_msg_type, db_msg_status
+from typing import Any, Iterable, Mapping, Optional, Tuple, Dict
+from DB.protocol_db_server import DBResponse, db_response_type, db_msg_status
 from db_connection import DB_CONNECTION
 
 
@@ -37,22 +37,30 @@ def _dump_dt(dt: datetime) -> str:
     return dt.replace(microsecond=0).strftime(_SQLITE_TS_FMT)
 
 
-def _norm_day(day: str) -> Tuple[Server_DB_Message, str]:
+def _ok_payload(output: Any) -> Dict[str, Any]:
+    return {"output": output, "error": None}
+
+
+def _error_payload(message: str) -> Dict[str, Any]:
+    return {"output": None, "error": message}
+
+
+def _norm_day(day: str) -> Tuple[DBResponse, str]:
     d = day.strip().lower()
     if d not in DAY_TO_COLS:
         return (
-            Server_DB_Message(
-                type=db_msg_type.ERROR,
+            DBResponse(
+                type=db_response_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
-                payload=f"Invalid day name:{d}",
+                payload=_error_payload(f"Invalid day name:{d}"),
             ),
             "",
         )
     return (
-        Server_DB_Message(
-            type=db_msg_type.TYPE_CHECK,
+        DBResponse(
+            type=db_response_type.TYPE_CHECK,
             status=db_msg_status.OK,
-            payload="Creation Succeded",
+            payload=_ok_payload("Creation Succeded"),
         ),
         d,
     )
@@ -60,31 +68,35 @@ def _norm_day(day: str) -> Tuple[Server_DB_Message, str]:
 
 def _validate_schedule_day(
     sd: ScheduleDay,
-) -> Tuple[Server_DB_Message, Optional[ScheduleDay]]:
+) -> Tuple[DBResponse, Optional[ScheduleDay]]:
     dep, ret = sd.departure_time, sd.return_time
     if dep is None or ret is None:
         return (
-            Server_DB_Message(
-                type=db_msg_type.ERROR,
+            DBResponse(
+                type=db_response_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
-                payload=f"Both departure_time and return_time must be set together: dep={dep}, ret={ret}",
+                payload=_error_payload(
+                    f"Both departure_time and return_time must be set together: dep={dep}, ret={ret}"
+                ),
             ),
             None,
         )
     if ret < dep:
         return (
-            Server_DB_Message(
-                type=db_msg_type.ERROR,
+            DBResponse(
+                type=db_response_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
-                payload=f"return_time must be >= departure_time: dep={dep}, ret={ret}",
+                payload=_error_payload(
+                    f"return_time must be >= departure_time: dep={dep}, ret={ret}"
+                ),
             ),
             None,
         )
     return (
-        Server_DB_Message(
-            type=db_msg_type.TYPE_CHECK,
+        DBResponse(
+            type=db_response_type.TYPE_CHECK,
             status=db_msg_status.OK,
-            payload="Success",
+            payload=_ok_payload("Success"),
         ),
         ScheduleDay(departure_time=dep, return_time=ret),
     )
@@ -143,10 +155,10 @@ def create_schedule(*, days: Mapping[str, ScheduleDay] | None = None) -> int:
     for k, v in days.items():
         m1, key = _norm_day(k)
         if m1.status != db_msg_status.OK:
-            raise ValueError(m1.payload)
+            raise ValueError(m1.payload["error"])
         m2, ok_sd = _validate_schedule_day(v)
         if m2.status != db_msg_status.OK or ok_sd is None:
-            raise ValueError(m2.payload)
+            raise ValueError(m2.payload["error"])
         normalized[key] = ok_sd
     cols: list[str] = []
     vals: list[str] = []
@@ -178,7 +190,7 @@ def update_schedule(
     *,
     schedule_id: int,
     days: Mapping[str, ScheduleDay] | None = None,
-) -> Server_DB_Message:
+) -> DBResponse:
     """
     Update selected day times for a schedule row.
     - Verifies the user exists.
@@ -187,18 +199,18 @@ def update_schedule(
     """
 
     if not _schedule_exists(schedule_id):
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.NOT_FOUND,
-            payload=f"Schedule not found: id={schedule_id}",
+            payload=_error_payload(f"Schedule not found: id={schedule_id}"),
         )
 
     days = days or {}
     if not days:
-        return Server_DB_Message(
-            type=db_msg_type.TYPE_CHECK,
+        return DBResponse(
+            type=db_response_type.TYPE_CHECK,
             status=db_msg_status.OK,
-            payload=f"No changes requested for schedule id={schedule_id}.",
+            payload=_ok_payload(f"No changes requested for schedule id={schedule_id}."),
         )
 
     normalized: Dict[str, ScheduleDay] = {}
@@ -225,10 +237,12 @@ def update_schedule(
             params.append(_dump_dt(sd.return_time))
 
     if not set_parts:
-        return Server_DB_Message(
-            type=db_msg_type.TYPE_CHECK,
+        return DBResponse(
+            type=db_response_type.TYPE_CHECK,
             status=db_msg_status.OK,
-            payload=f"No valid day fields to update for schedule id={schedule_id}.",
+            payload=_ok_payload(
+                f"No valid day fields to update for schedule id={schedule_id}."
+            ),
         )
 
     sql = f"UPDATE schedule SET {', '.join(set_parts)} WHERE id = ?"
@@ -239,23 +253,23 @@ def update_schedule(
         DB_CONNECTION.commit()
     except sqlite3.IntegrityError as e:
         # Likely CHECK(ret >= dep) violation or similar
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=f"Update failed due to constraint: {e}",
+            payload=_error_payload(f"Update failed due to constraint: {e}"),
         )
 
     # In sqlite3, rowcount is reliable for UPDATE — make sure something changed
     if cur.rowcount == 0:
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=f"No rows updated for schedule id={schedule_id}.",
+            payload=_error_payload(f"No rows updated for schedule id={schedule_id}."),
         )
 
     # If you have a SCHEDULE_UPDATED type, use it; else keep SCHEDULE_CREATED.
-    return Server_DB_Message(
-        type=db_msg_type.SCHEDULE_UPDATED,
+    return DBResponse(
+        type=db_response_type.SCHEDULE_UPDATED,
         status=db_msg_status.OK,
-        payload=f"Schedule {schedule_id} updated successfully.",
+        payload=_ok_payload(f"Schedule {schedule_id} updated successfully."),
     )

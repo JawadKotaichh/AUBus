@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
-import json
 import secrets
 import sqlite3
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from db_connection import DB_CONNECTION
-from DB.protocol_db_server import Server_DB_Message, db_msg_status, db_msg_type
+from DB.protocol_db_server import DBResponse, db_msg_status, db_response_type
 
 
 def init_user_sessions_schema() -> None:
@@ -33,21 +32,21 @@ def init_user_sessions_schema() -> None:
 
 def _validate_endpoint(
     ip: Optional[str], port_number: Optional[int]
-) -> Optional[Server_DB_Message]:
+) -> Optional[DBResponse]:
     if ip is not None:
         try:
             ipaddress.ip_address(ip)
         except ValueError:
-            return Server_DB_Message(
-                type=db_msg_type.ERROR,
+            return DBResponse(
+                type=db_response_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
-                payload=f"Invalid IP address: {ip!r}",
+                payload=_error_payload(f"Invalid IP address: {ip!r}"),
             )
     if port_number is not None and not (0 <= port_number <= 65535):
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=f"Invalid port number: {port_number}",
+            payload=_error_payload(f"Invalid port number: {port_number}"),
         )
     return None
 
@@ -57,13 +56,21 @@ def _generate_session_token(nbytes: int = 32) -> str:
     return secrets.token_urlsafe(nbytes)
 
 
+def _ok_payload(output: Any) -> Dict[str, Any]:
+    return {"output": output, "error": None}
+
+
+def _error_payload(message: str) -> Dict[str, Any]:
+    return {"output": None, "error": message}
+
+
 def create_session(
     *,
     user_id: int,
     session_token: Optional[str] = None,
     ip: Optional[str],
     port_number: Optional[int],
-) -> Server_DB_Message:
+) -> DBResponse:
     """Insert or refresh a session entry for a user, auto-generating tokens when needed."""
     token = (session_token or "").strip() or _generate_session_token()
 
@@ -85,20 +92,20 @@ def create_session(
             (user_id, token, ip, port_number),
         )
         DB_CONNECTION.commit()
-        return Server_DB_Message(
-            type=db_msg_type.SESSION_CREATED,
+        return DBResponse(
+            type=db_response_type.SESSION_CREATED,
             status=db_msg_status.OK,
-            payload=json.dumps({"session_token": token}),
+            payload=_ok_payload({"session_token": token}),
         )
     except sqlite3.Error as exc:
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=str(exc),
+            payload=_error_payload(str(exc)),
         )
 
 
-def get_session_by_user(user_id: int) -> Server_DB_Message:
+def get_session_by_user(user_id: int) -> DBResponse:
     """Fetch a session row for the provided user."""
     try:
         cur = DB_CONNECTION.execute(
@@ -118,32 +125,30 @@ def get_session_by_user(user_id: int) -> Server_DB_Message:
         )
         row = cur.fetchone()
         if row is None:
-            return Server_DB_Message(
-                type=db_msg_type.ERROR,
+            return DBResponse(
+                type=db_response_type.ERROR,
                 status=db_msg_status.NOT_FOUND,
-                payload=f"No session found for user_id={user_id}",
+                payload=_error_payload(f"No session found for user_id={user_id}"),
             )
-        payload = json.dumps(
-            {
-                "id": row[0],
-                "user_id": row[1],
-                "session_token": row[2],
-                "ip": row[3],
-                "port_number": row[4],
-                "last_seen": row[5],
-                "created_at": row[6],
-            }
-        )
-        return Server_DB_Message(
-            type=db_msg_type.SESSION_CREATED,
+        payload = {
+            "id": row[0],
+            "user_id": row[1],
+            "session_token": row[2],
+            "ip": row[3],
+            "port_number": row[4],
+            "last_seen": row[5],
+            "created_at": row[6],
+        }
+        return DBResponse(
+            type=db_response_type.SESSION_CREATED,
             status=db_msg_status.OK,
-            payload=payload,
+            payload=_ok_payload(payload),
         )
     except sqlite3.Error as exc:
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=str(exc),
+            payload=_error_payload(str(exc)),
         )
 
 
@@ -151,13 +156,15 @@ def delete_session(
     *,
     user_id: Optional[int] = None,
     session_token: Optional[str] = None,
-) -> Server_DB_Message:
+) -> DBResponse:
     """Remove a stored session by user id or token."""
     if user_id is None and not session_token:
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload="Either user_id or session_token is required to delete a session.",
+            payload=_error_payload(
+                "Either user_id or session_token is required to delete a session."
+            ),
         )
     params: list[Any] = []
     filters = []
@@ -174,32 +181,32 @@ def delete_session(
         )
         DB_CONNECTION.commit()
         if cur.rowcount == 0:
-            return Server_DB_Message(
-                type=db_msg_type.ERROR,
+            return DBResponse(
+                type=db_response_type.ERROR,
                 status=db_msg_status.NOT_FOUND,
-                payload="Session not found for provided identifiers.",
+                payload=_error_payload("Session not found for provided identifiers."),
             )
-        return Server_DB_Message(
-            type=db_msg_type.SESSION_CREATED,
+        return DBResponse(
+            type=db_response_type.SESSION_CREATED,
             status=db_msg_status.OK,
-            payload="Session deleted.",
+            payload=_ok_payload("Session deleted."),
         )
     except sqlite3.Error as exc:
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=str(exc),
+            payload=_error_payload(str(exc)),
         )
 
 
-def touch_session(session_token: str) -> Server_DB_Message:
+def touch_session(session_token: str) -> DBResponse:
     """Update the last_seen timestamp for a session token."""
     token = (session_token or "").strip()
     if not token:
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload="session_token cannot be empty.",
+            payload=_error_payload("session_token cannot be empty."),
         )
     try:
         cur = DB_CONNECTION.execute(
@@ -212,19 +219,19 @@ def touch_session(session_token: str) -> Server_DB_Message:
         )
         DB_CONNECTION.commit()
         if cur.rowcount == 0:
-            return Server_DB_Message(
-                type=db_msg_type.ERROR,
+            return DBResponse(
+                type=db_response_type.ERROR,
                 status=db_msg_status.NOT_FOUND,
-                payload=f"Session not found for token={token}",
+                payload=_error_payload(f"Session not found for token={token}"),
             )
-        return Server_DB_Message(
-            type=db_msg_type.SESSION_CREATED,
+        return DBResponse(
+            type=db_response_type.SESSION_CREATED,
             status=db_msg_status.OK,
-            payload="Session heartbeat stored.",
+            payload=_ok_payload("Session heartbeat stored."),
         )
     except sqlite3.Error as exc:
-        return Server_DB_Message(
-            type=db_msg_type.ERROR,
+        return DBResponse(
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=str(exc),
+            payload=_error_payload(str(exc)),
         )
