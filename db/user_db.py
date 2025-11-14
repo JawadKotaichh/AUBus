@@ -5,7 +5,7 @@ import hmac
 import os
 from typing import Tuple, Mapping
 from db_connection import DB_CONNECTION
-from models import db_msg_type, db_msg_status, Message
+from models import db_msg_type, db_msg_status, Server_DB_Message
 from schedules import (
     ScheduleDay,
     update_schedule as update_schedule_entry,
@@ -66,7 +66,7 @@ class password_hashing:
 # ==============================
 # INITIAL DATABASE CREATION
 # ==============================
-def creating_initial_db() -> Message:
+def creating_initial_db() -> Server_DB_Message:
     try:
         db = DB_CONNECTION
         cursor = db.cursor()
@@ -96,13 +96,13 @@ def creating_initial_db() -> Message:
         init_ride_schema()
         init_user_sessions_schema()
         db.commit()
-        return Message(
+        return Server_DB_Message(
             db_msg_type.SESSION_CREATED,
             db_msg_status.OK,
             "User table created or verified.",
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
 def create_user(
@@ -123,7 +123,7 @@ def create_user(
         cleaned_area = (area or "").strip()
         if not cleaned_area:
             return (
-                Message(
+                Server_DB_Message(
                     db_msg_type.ERROR,
                     db_msg_status.INVALID_INPUT,
                     "Area is required for every user.",
@@ -161,7 +161,7 @@ def create_user(
         conn.commit()
         user_id = cur.lastrowid
         return (
-            Message(
+            Server_DB_Message(
                 db_msg_type.SESSION_CREATED,
                 db_msg_status.OK,
                 f"User created with ID {user_id}.",
@@ -169,10 +169,12 @@ def create_user(
             user_id,
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e)), None
+        return Server_DB_Message(
+            db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e)
+        ), None
 
 
-def authenticate(username: str, password: str) -> Message:
+def authenticate(username: str, password: str) -> Server_DB_Message:
     """Authenticate a user by verifying username and password."""
     try:
         conn = DB_CONNECTION
@@ -184,29 +186,29 @@ def authenticate(username: str, password: str) -> Message:
         row = cur.fetchone()
 
         if not row:
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.ERROR, db_msg_status.NOT_FOUND, "Username not found."
             )
 
         user_id, salt_b64, hash_b64 = row
         ph = password_hashing()
         if ph.verify_password(password, salt_b64, hash_b64):
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.SESSION_CREATED,
                 db_msg_status.OK,
                 f"Authenticated user ID {user_id}.",
             )
         else:
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Invalid password."
             )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def update_username(user_id: int, new_username: str) -> Message:
+def update_username(user_id: int, new_username: str) -> Server_DB_Message:
     if not new_username.strip():
-        return Message(
+        return Server_DB_Message(
             db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Username cannot be empty."
         )
     try:
@@ -216,27 +218,29 @@ def update_username(user_id: int, new_username: str) -> Message:
             """UPDATE users SET username=? WHERE id=?""", (new_username, user_id)
         )
         conn.commit()
-        return Message(
+        return Server_DB_Message(
             db_msg_type.SESSION_CREATED,
             db_msg_status.OK,
             f"Username updated to {new_username}.",
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def update_email(user_id: int, new_email: str) -> Message:
+def update_email(user_id: int, new_email: str) -> Server_DB_Message:
     def is_allowed(email: str, domain="@aub.edu.lb") -> bool:
         return email.lower().endswith(domain)
 
     if not new_email.strip():
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Empty email.")
+        return Server_DB_Message(
+            db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Empty email."
+        )
     if "@" not in new_email:
-        return Message(
+        return Server_DB_Message(
             db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Email must contain '@'."
         )
     if not is_allowed(new_email):
-        return Message(
+        return Server_DB_Message(
             db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Not an AUB email."
         )
 
@@ -245,18 +249,18 @@ def update_email(user_id: int, new_email: str) -> Message:
         cur = conn.cursor()
         cur.execute("""UPDATE users SET email=? WHERE id=?""", (new_email, user_id))
         conn.commit()
-        return Message(
+        return Server_DB_Message(
             db_msg_type.SESSION_CREATED,
             db_msg_status.OK,
             f"Email updated to {new_email}.",
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
 def update_user_schedule(
     user_id: int, days: Mapping[str, "ScheduleDay"] | None = None
-) -> Message:
+) -> Server_DB_Message:
     """Fetch user's schedule_id and update it via schedule system."""
     try:
         conn = DB_CONNECTION
@@ -265,13 +269,13 @@ def update_user_schedule(
         row = cur.fetchone()
 
         if not row:
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.ERROR, db_msg_status.NOT_FOUND, "User not found."
             )
 
         schedule_id = row[0]
         if not schedule_id:
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.ERROR,
                 db_msg_status.INVALID_INPUT,
                 "User has no schedule assigned.",
@@ -280,21 +284,21 @@ def update_user_schedule(
         # Call external schedule updater
         schedule_result = update_schedule_entry(schedule_id=schedule_id, days=days)
 
-        if isinstance(schedule_result, Message):
+        if isinstance(schedule_result, Server_DB_Message):
             return schedule_result
         else:
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.SCHEDULE_CREATED,
                 db_msg_status.OK,
                 "Schedule updated successfully.",
             )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def update_password(user_id: int, new_password: str) -> Message:
+def update_password(user_id: int, new_password: str) -> Server_DB_Message:
     if not new_password:
-        return Message(
+        return Server_DB_Message(
             db_msg_type.ERROR, db_msg_status.INVALID_INPUT, "Password cannot be empty."
         )
     try:
@@ -307,16 +311,16 @@ def update_password(user_id: int, new_password: str) -> Message:
             (salt, hashed, user_id),
         )
         conn.commit()
-        return Message(
+        return Server_DB_Message(
             db_msg_type.SESSION_CREATED,
             db_msg_status.OK,
             "Password updated successfully.",
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def adjust_avg_driver(user_id: int, latest_rating: int) -> Message:
+def adjust_avg_driver(user_id: int, latest_rating: int) -> Server_DB_Message:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
@@ -326,7 +330,7 @@ def adjust_avg_driver(user_id: int, latest_rating: int) -> Message:
         )
         row = cur.fetchone()
         if not row:
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.ERROR, db_msg_status.NOT_FOUND, "User not found."
             )
         avg_rating_driver, number_of_rides_driver = row
@@ -338,14 +342,14 @@ def adjust_avg_driver(user_id: int, latest_rating: int) -> Message:
             (new_avg, number_of_rides_driver + 1, user_id),
         )
         conn.commit()
-        return Message(
+        return Server_DB_Message(
             db_msg_type.SESSION_CREATED, db_msg_status.OK, "Driver rating updated."
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def adjust_avg_rider(user_id: int, latest_rating: int) -> Message:
+def adjust_avg_rider(user_id: int, latest_rating: int) -> Server_DB_Message:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
@@ -355,7 +359,7 @@ def adjust_avg_rider(user_id: int, latest_rating: int) -> Message:
         )
         row = cur.fetchone()
         if not row:
-            return Message(
+            return Server_DB_Message(
                 db_msg_type.ERROR, db_msg_status.NOT_FOUND, "User not found."
             )
         avg_rating_rider, number_of_rides_rider = row
@@ -367,38 +371,42 @@ def adjust_avg_rider(user_id: int, latest_rating: int) -> Message:
             (new_avg, number_of_rides_rider + 1, user_id),
         )
         conn.commit()
-        return Message(
+        return Server_DB_Message(
             db_msg_type.SESSION_CREATED, db_msg_status.OK, "Rider rating updated."
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def get_rides_driver(user_id: int) -> Message:
+def get_rides_driver(user_id: int) -> Server_DB_Message:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
         cur.execute("""SELECT * FROM rides WHERE driver_id=?""", (user_id,))
         rides = cur.fetchall()
         if rides:
-            return Message(db_msg_type.RIDE_CREATED, db_msg_status.OK, str(rides))
-        return Message(
+            return Server_DB_Message(
+                db_msg_type.RIDE_CREATED, db_msg_status.OK, str(rides)
+            )
+        return Server_DB_Message(
             db_msg_type.RIDE_CREATED, db_msg_status.NOT_FOUND, "No driver rides found."
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
 
 
-def get_rides_rider(user_id: int) -> Message:
+def get_rides_rider(user_id: int) -> Server_DB_Message:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
         cur.execute("""SELECT * FROM rides WHERE rider_id=?""", (user_id,))
         rides = cur.fetchall()
         if rides:
-            return Message(db_msg_type.RIDE_CREATED, db_msg_status.OK, str(rides))
-        return Message(
+            return Server_DB_Message(
+                db_msg_type.RIDE_CREATED, db_msg_status.OK, str(rides)
+            )
+        return Server_DB_Message(
             db_msg_type.RIDE_CREATED, db_msg_status.NOT_FOUND, "No rider rides found."
         )
     except Exception as e:
-        return Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))
+        return Server_DB_Message(db_msg_type.ERROR, db_msg_status.INVALID_INPUT, str(e))

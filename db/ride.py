@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import sqlite3
 
 from db_connection import DB_CONNECTION
-from models import Message, db_msg_status, db_msg_type
+from models import Server_DB_Message, db_msg_status, db_msg_type
 
 
 class RideStatus(str, enum.Enum):
@@ -23,7 +23,7 @@ RIDE_STATUS_VALUES: Tuple[str, ...] = tuple(status.value for status in RideStatu
 
 def _coerce_status(
     status: RideStatus | str | None,
-) -> Tuple[Optional[RideStatus], Optional[Message]]:
+) -> Tuple[Optional[RideStatus], Optional[Server_DB_Message]]:
     """Normalize user input status into the RideStatus enum."""
     if status is None:
         return None, None
@@ -35,7 +35,7 @@ def _coerce_status(
     try:
         return RideStatus[status_str], None
     except KeyError:
-        return None, Message(
+        return None, Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload=f"Invalid ride status: {status!r}. Allowed: {', '.join(RIDE_STATUS_VALUES)}",
@@ -117,12 +117,12 @@ def create_ride(
     completed_at: Optional[str] = None,
     status: RideStatus | str = RideStatus.PENDING,
     comment: Optional[str] = "",
-) -> Message:
+) -> Server_DB_Message:
     ride_status, error = _coerce_status(status)
     if error:
         return error
     if ride_status is None:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload="Ride status cannot be empty.",
@@ -131,25 +131,25 @@ def create_ride(
     destination_clean = (destination or "").strip()
     requested_time_clean = (requested_time or "").strip()
     if not pickup_area_clean:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload="pickup_area cannot be empty.",
         )
     if not destination_clean:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload="destination cannot be empty.",
         )
     if not requested_time_clean:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload="requested_time cannot be empty.",
         )
     if rider_id is None:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload="rider_id is required.",
@@ -195,20 +195,20 @@ def create_ride(
                 "message": "Ride created successfully",
             }
         )
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.RIDE_CREATED,
             status=db_msg_status.OK,
             payload=payload,
         )
     except sqlite3.Error as exc:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload=str(exc),
         )
 
 
-def get_ride(ride_id: int) -> Message:
+def get_ride(ride_id: int) -> Server_DB_Message:
     try:
         cur = DB_CONNECTION.execute(
             """
@@ -232,18 +232,18 @@ def get_ride(ride_id: int) -> Message:
         )
         row = cur.fetchone()
         if row is None:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.ERROR,
                 status=db_msg_status.NOT_FOUND,
                 payload=f"Ride not found: {ride_id}",
             )
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.RIDE_CREATED,
             status=db_msg_status.OK,
             payload=json.dumps(_row_to_ride(row)),
         )
     except sqlite3.Error as exc:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload=str(exc),
@@ -258,7 +258,7 @@ def list_rides(
     driver_id: Optional[int] = None,
     pickup_area: Optional[str] = None,
     status: RideStatus | str | None = None,
-) -> Message:
+) -> Server_DB_Message:
     filters: List[str] = []
     params: List[Any] = []
 
@@ -308,18 +308,18 @@ def list_rides(
         cur = DB_CONNECTION.execute(sql, params)
         rows = cur.fetchall()
         if not rows:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.RIDE_CREATED,
                 status=db_msg_status.NOT_FOUND,
                 payload="No rides match the requested filters.",
             )
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.RIDE_CREATED,
             status=db_msg_status.OK,
             payload=_rows_to_payload(rows),
         )
     except sqlite3.Error as exc:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload=str(exc),
@@ -339,7 +339,7 @@ def update_ride(
     requested_time: Optional[str] = None,
     accepted_at: Optional[str] = None,
     completed_at: Optional[str] = None,
-) -> Message:
+) -> Server_DB_Message:
     updates: List[str] = []
     params: List[Any] = []
 
@@ -348,7 +348,7 @@ def update_ride(
         if error:
             return error
         if status_value is None:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
                 payload="Ride status cannot be empty.",
@@ -371,7 +371,7 @@ def update_ride(
     if pickup_area is not None:
         clean_area = pickup_area.strip()
         if not clean_area:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
                 payload="pickup_area cannot be empty string.",
@@ -381,7 +381,7 @@ def update_ride(
     if destination is not None:
         clean_destination = destination.strip()
         if not clean_destination:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
                 payload="destination cannot be empty string.",
@@ -391,7 +391,7 @@ def update_ride(
     if requested_time is not None:
         clean_requested = requested_time.strip()
         if not clean_requested:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.ERROR,
                 status=db_msg_status.INVALID_INPUT,
                 payload="requested_time cannot be empty string.",
@@ -406,7 +406,7 @@ def update_ride(
         params.append(completed_at)
 
     if not updates:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.TYPE_CHECK,
             status=db_msg_status.INVALID_INPUT,
             payload="No fields supplied to update.",
@@ -419,41 +419,41 @@ def update_ride(
         )
         DB_CONNECTION.commit()
         if cur.rowcount == 0:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.ERROR,
                 status=db_msg_status.NOT_FOUND,
                 payload=f"Ride not found: {ride_id}",
             )
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.RIDE_UPDATED,
             status=db_msg_status.OK,
             payload=f"Ride {ride_id} updated successfully.",
         )
     except sqlite3.Error as exc:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload=str(exc),
         )
 
 
-def delete_ride(ride_id: int) -> Message:
+def delete_ride(ride_id: int) -> Server_DB_Message:
     try:
         cur = DB_CONNECTION.execute("DELETE FROM rides WHERE id = ?", (ride_id,))
         DB_CONNECTION.commit()
         if cur.rowcount == 0:
-            return Message(
+            return Server_DB_Message(
                 type=db_msg_type.ERROR,
                 status=db_msg_status.NOT_FOUND,
                 payload=f"Ride not found: {ride_id}",
             )
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.RIDE_DELETED,
             status=db_msg_status.OK,
             payload=f"Ride {ride_id} deleted successfully.",
         )
     except sqlite3.Error as exc:
-        return Message(
+        return Server_DB_Message(
             type=db_msg_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
             payload=str(exc),

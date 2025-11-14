@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-class db_msg_type(enum.IntEnum):
+class msg_type(enum.IntEnum):
     ERROR = 1
     SCHEDULE_CREATED = 2
     SESSION_CREATED = 3
@@ -14,14 +14,14 @@ class db_msg_type(enum.IntEnum):
     RIDE_DELETED = 8
 
 
-class db_msg_status(enum.IntEnum):
+class msg_status(enum.IntEnum):
     OK = 1
     INVALID_INPUT = 2
     NOT_FOUND = 3
 
 
 @dataclass(frozen=True)
-class Server_DB_Message:
-    type: db_msg_type
-    status: db_msg_status
+class Server_Client_Message:
+    type: msg_type
+    status: msg_status
     payload: Optional[str] = None
