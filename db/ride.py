@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import sqlite3
 
 from db_connection import DB_CONNECTION
-from DB.protocol_db_server import DBResponse, db_msg_status, db_response_type
+from db.protocol_db_server import DBResponse, db_msg_status, db_response_type
 
 
 class RideStatus(str, enum.Enum):
@@ -61,7 +61,9 @@ def _row_to_ride(row: sqlite3.Row | Tuple[Any, ...]) -> Dict[str, Any]:
     return {k: row[idx] for idx, k in enumerate(keys)}
 
 
-def _rows_to_payload(rows: Iterable[sqlite3.Row | Tuple[Any, ...]]) -> List[Dict[str, Any]]:
+def _rows_to_payload(
+    rows: Iterable[sqlite3.Row | Tuple[Any, ...]],
+) -> List[Dict[str, Any]]:
     return [_row_to_ride(row) for row in rows]
 
 

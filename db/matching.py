@@ -3,14 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List
 
-from DB.user_db import fetch_online_drivers, get_user_location
-from DB.protocol_db_server import db_msg_status
-from DB.maps_service import (
+from user_db import fetch_online_drivers, get_user_location
+from protocol_db_server import db_msg_status
+from maps_service import (
     coords_to_string,
     get_distance_and_duration,
     build_google_maps_link,
 )
-from DB.zones import zone_for_coordinates
+from zones import zone_for_coordinates
 
 
 def compute_driver_to_rider_info(driver_id: int, rider_id: int) -> dict:

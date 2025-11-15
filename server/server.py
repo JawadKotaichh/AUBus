@@ -10,7 +10,7 @@ from server_client_protocol import (
     msg_status,
 )
 from json_codec import decode_client_request, encode_server_response
-from DB.user_db import creating_initial_db
+from db.user_db import creating_initial_db
 from server.handlers import handle_register, handle_login
 
 SERVER_HOST = "127.0.0.1"
