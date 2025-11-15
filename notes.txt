@@ -18,18 +18,17 @@ J/Y-> Add the required request types
 TODO: Server
 
 -> User requests:    
-    -> update profile (updated things in json) ex: payload= {"name" : jawad,"is_driver":true}
-    -> get list of drivers with filters ex: payload={"min_avg_rider_rating":2,"zone":choose one of the zones available,
+    Y-> update profile (updated things in json) ex: payload= {"name" : jawad,"is_driver":true} #add filter for name,username
+    Y-> get list of drivers with filters ex: payload={"min_avg_rider_rating":2,"zone":choose one of the zones available,
                                                     "schedule":available at specific time,"name":xxxxx} 
                                                     # Always make sure that the drivers are online (required!)
-                                                    so we need to know the day and time at any moment
-
-    -> ride request specific driver: from the list of drivers (the rider chooses his driver and send him request)
-    -> ride request: it will take the user_id and send the request ride request(user_id,destination_location:  true(AUB) or false(Home))
+                                                    so we need to know the day and time at any moment.
+    Y-> ride request specific driver: from the list of drivers (the rider chooses his driver and send him request)
+    J-> ride request: it will take the user_id and send the request ride request(user_id,destination_location:  true(AUB) or false(Home))
         -> the driver will see the rider rating so he can decide what he needs to do 
         ->wait for their acceptance or rejection
         -> After driver acceptance send a confirmation request to the rider or cancel
-        -> p2p chat (to the end) # last step
+        ## -> p2p chat (to the end) # last step ##
         -> arrive to destination
         -> rating: 
             -> driver to rider
