@@ -205,11 +205,18 @@ class MockServerAPI(ServerAPI):
         self._user = {
             "username": "guest",
             "email": "guest@aub.edu.lb",
+            "password": "guest",
             "area": "Hamra",
             "role": "passenger",
-            "theme": "light",
+            "theme": "bolt_light",
             "notifications": True,
         }
+        self._logged_in: bool = False  # 🔒 gate everything until login
+
+    # --- auth helpers -----------------------------------------------------------
+    def _require_login(self) -> None:
+        if not self._logged_in:
+            raise ServerAPIError("Please log in first")
 
     # Override network calls -----------------------------------------------------
     def _send_request(self, action: str, payload: Optional[Dict[str, Any]]) -> Any:  # type: ignore[override]
@@ -222,20 +229,26 @@ class MockServerAPI(ServerAPI):
     def _handle_login(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if payload["username"] != "guest" or payload["password"] != "guest":
             raise ServerAPIError("Invalid credentials")
+        self._logged_in = True
         return {**self._user, "token": "mock-token"}
 
     def _handle_register(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # Update stored "account"; GUI will auto-login after this step.
         self._user.update(payload)
+        # Do not set _logged_in here; require an explicit login call.
         return {"message": "Registered", "username": payload["username"]}
 
     def _handle_weather(self, _: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
         return {"temp_c": 23, "status": "Sunny", "humidity": 60, "city": "Beirut"}
 
     def _handle_latest_rides(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self._require_login()
         limit = payload.get("limit", 5)
         return self.db.rides[:limit]
 
     def _handle_drivers(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
         drivers = self.db.drivers
         min_rating = payload.get("min_rating")
         area = payload.get("area")
@@ -249,6 +262,7 @@ class MockServerAPI(ServerAPI):
         return {"items": drivers, "page": payload.get("page", 1), "total": len(drivers)}
 
     def _handle_request_ride(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
         request_id = f"req-{len(self.db.rides) + 1}"
         ride = {
             "id": request_id,
@@ -261,12 +275,14 @@ class MockServerAPI(ServerAPI):
         return {"request_id": request_id, "status": "pending"}
 
     def _handle_ride_status(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
         ride = next((r for r in self.db.rides if r["id"] == payload["request_id"]), None)
         if not ride:
             raise ServerAPIError("Ride not found")
         return ride
 
     def _handle_cancel_ride(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
         ride = next((r for r in self.db.rides if r["id"] == payload["request_id"]), None)
         if not ride:
             raise ServerAPIError("Ride not found")
@@ -274,12 +290,15 @@ class MockServerAPI(ServerAPI):
         return {"status": "cancelled"}
 
     def _handle_trips(self, _: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self._require_login()
         return self.db.trips
 
     def _handle_chats(self, _: Dict[str, Any]) -> List[Dict[str, Any]]:
+        self._require_login()
         return self.db.chats
 
     def _handle_chat_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
         chat = next((c for c in self.db.chats if c["chat_id"] == payload["chat_id"]), None)
         if not chat:
             raise ServerAPIError("Chat not found")
@@ -287,5 +306,6 @@ class MockServerAPI(ServerAPI):
         return {"status": "sent"}
 
     def _handle_update_profile(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
         self._user.update(payload.get("profile", {}))
         return self._user

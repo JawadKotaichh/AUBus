@@ -35,6 +35,50 @@ from server_api import MockServerAPI, ServerAPI, ServerAPIError
 
 
 THEME_PALETTES = {
+    # --- Bolt-inspired light theme ---
+    "bolt_light": {
+        "text": "#111111",
+        "muted": "#6B6F76",
+        "background": "#FFFFFF",
+        "card": "#FFFFFF",
+        "border": "#E8E8E8",
+        "list_bg": "#F7F8F9",
+        "accent": "#34BB78",      # Bolt Green
+        "accent_alt": "#169A63",  # darker for hover/active
+        "button_text": "#FFFFFF",
+        "input_bg": "#FFFFFF",
+        "table_header": "#F2F3F5",
+        "statusbar": "#FFFFFF",
+        "chat_background": "#F5F7F6",
+        "chat_self": "#34BB78",
+        "chat_other": "#FFFFFF",
+        "chat_self_text": "#FFFFFF",
+        "stat_bg": "#34BB78",
+        "stat_text": "#FFFFFF",
+    },
+
+    # --- Bolt-inspired dark theme ---
+    "bolt_dark": {
+        "text": "#F5F7F6",
+        "muted": "#A7B4C3",
+        "background": "#0E1411",
+        "card": "#121915",
+        "border": "#233426",
+        "list_bg": "#0F1813",
+        "accent": "#34BB78",
+        "accent_alt": "#26A86C",
+        "button_text": "#0B0F0D",
+        "input_bg": "#101712",
+        "table_header": "#142019",
+        "statusbar": "#0F1713",
+        "chat_background": "#0F1713",
+        "chat_self": "#1E3A2E",
+        "chat_other": "#15201A",
+        "chat_self_text": "#E9FFF4",
+        "stat_bg": "#1E3A2E",
+        "stat_text": "#E9FFF4",
+    },
+
     "light": {
         "text": "#1A1A1B",
         "muted": "#6D6F73",
@@ -44,6 +88,7 @@ THEME_PALETTES = {
         "list_bg": "#F3F4F7",
         "accent": "#FF5700",
         "accent_alt": "#FFB000",
+        "button_text": "#FFFFFF",
         "input_bg": "#FFFFFF",
         "table_header": "#F2F3F5",
         "statusbar": "#FFFFFF",
@@ -51,6 +96,8 @@ THEME_PALETTES = {
         "chat_self": "#DCF8C6",
         "chat_other": "#FFFFFF",
         "chat_self_text": "#1A1A1B",
+        "stat_bg": "#FF5700",
+        "stat_text": "#FFFFFF",
     },
     "dark": {
         "text": "#F6F9FC",
@@ -61,6 +108,7 @@ THEME_PALETTES = {
         "list_bg": "#111924",
         "accent": "#1A9AF2",
         "accent_alt": "#7D2AE8",
+        "button_text": "#FFFFFF",
         "input_bg": "#0F1822",
         "table_header": "#182332",
         "statusbar": "#111924",
@@ -68,15 +116,17 @@ THEME_PALETTES = {
         "chat_self": "#065E52",
         "chat_other": "#182332",
         "chat_self_text": "#F4FDF9",
+        "stat_bg": "#1A9AF2",
+        "stat_text": "#FFFFFF",
     },
 }
 
 
 def build_stylesheet(mode: str) -> str:
-    colors = THEME_PALETTES.get(mode, THEME_PALETTES["light"])
+    colors = THEME_PALETTES.get(mode, THEME_PALETTES["bolt_light"])
     return f"""
 * {{
-    font-family: 'Segoe UI', 'Inter', sans-serif;
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
     color: {colors["text"]};
 }}
 QWidget {{
@@ -85,38 +135,38 @@ QWidget {{
 }}
 QGroupBox {{
     border: 1px solid {colors["border"]};
-    border-radius: 18px;
-    margin-top: 1.2em;
-    padding: 16px;
+    border-radius: 12px;
+    margin-top: 1.0em;
+    padding: 14px;
     background-color: {colors["card"]};
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 18px;
+    left: 12px;
     padding: 0 6px;
-    color: {colors["accent"]};
+    color: {colors["text"]};
     font-weight: 600;
 }}
 QLabel#statBadge {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {colors["accent"]}, stop:1 {colors["accent_alt"]});
-    border-radius: 18px;
-    padding: 18px;
-    color: #FFFFFF;
+    background-color: {colors["stat_bg"]};
+    border-radius: 12px;
+    padding: 16px;
+    color: {colors["stat_text"]};
 }}
-QLabel#muted {{
-    color: {colors["muted"]};
-}}
+QLabel#muted {{ color: {colors["muted"]}; }}
+
 QPushButton {{
     background-color: {colors["accent"]};
     border: none;
-    border-radius: 20px;
-    padding: 10px 20px;
+    border-radius: 10px;
+    padding: 10px 18px;
     font-weight: 600;
-    color: #FFFFFF;
+    color: {colors["button_text"]};
 }}
 QPushButton:hover {{ background-color: {colors["accent_alt"]}; }}
-QPushButton:pressed {{ background-color: {colors["accent"]}; opacity: 0.8; }}
-QPushButton:disabled {{ background-color: #CBD5DF; color: #7A818C; }}
+QPushButton:pressed {{ opacity: 0.92; }}
+QPushButton:disabled {{ background-color: #C7C7C7; color: #7A7A7A; }}
+
 QLineEdit,
 QComboBox,
 QDateTimeEdit,
@@ -126,53 +176,55 @@ QDoubleSpinBox,
 QTextEdit {{
     background-color: {colors["input_bg"]};
     border: 1px solid {colors["border"]};
-    border-radius: 14px;
+    border-radius: 10px;
     padding: 8px 12px;
 }}
 QTableWidget {{
-    background-color: {colors["input_bg"]};
-    border-radius: 12px;
+    background-color: {colors["card"]};
+    border-radius: 10px;
     gridline-color: {colors["border"]};
 }}
 QHeaderView::section {{
     background-color: {colors["table_header"]};
-    padding: 6px;
+    padding: 6px 8px;
     border: none;
     font-weight: 600;
 }}
-QListWidget#navList {{
-    background-color: {colors["list_bg"]};
-    border: none;
-    padding: 12px;
-}}
-QListWidget#navList::item {{
-    padding: 14px 12px;
-    margin: 4px 0;
-    border-radius: 14px;
-}}
-QListWidget#navList::item:hover {{
-    background-color: {colors["border"]};
-}}
-QListWidget#navList::item:selected {{
-    background-color: {colors["accent"]};
-    color: #FFFFFF;
-    font-weight: 600;
-}}
+
 QListWidget#chatMessages {{
     background-color: {colors["chat_background"]};
     border: none;
-    padding: 12px;
+    padding: 10px;
 }}
 QStatusBar {{
     background-color: {colors["statusbar"]};
     border-top: 1px solid {colors["border"]};
 }}
+
+/* --- Bottom tab bar (WhatsApp-like) --- */
+QFrame#bottomNav {{
+    background-color: {colors["card"]};
+    border-top: 1px solid {colors["border"]};
+}}
+QFrame#bottomNav QPushButton {{
+    background: transparent;
+    border: none;
+    color: {colors["muted"]};
+    padding: 6px 10px;
+    min-height: 44px;
+    font-weight: 700;
+    border-radius: 8px;
+}}
+QFrame#bottomNav QPushButton:hover {{
+    color: {colors["text"]};
+}}
+QFrame#bottomNav QPushButton:checked {{
+    color: {colors["accent"]};
+}}
 """
 
 
 class StatBadge(QLabel):
-    """Glass-like badge used on the dashboard."""
-
     def __init__(self, label: str, value: str = "0"):
         super().__init__()
         self.setObjectName("statBadge")
@@ -187,8 +239,6 @@ class StatBadge(QLabel):
 
 
 class MessageBubble(QWidget):
-    """Simple WhatsApp-like chat bubble used in the Chats page."""
-
     def __init__(self, body: str, sender: str, palette: Dict[str, str], is_self: bool = False):
         super().__init__()
         layout = QVBoxLayout(self)
@@ -217,7 +267,6 @@ class MessageBubble(QWidget):
 
 
 # Auth -------------------------------------------------------------------------
-
 
 class AuthPage(QWidget):
     authenticated = pyqtSignal(dict)
@@ -291,7 +340,7 @@ class AuthPage(QWidget):
 
     def _handle_register(self) -> None:
         try:
-            response = self.api.register_user(
+            _ = self.api.register_user(
                 name=self.reg_name.text().strip(),
                 email=self.reg_email.text().strip(),
                 username=self.reg_username.text().strip(),
@@ -303,12 +352,22 @@ class AuthPage(QWidget):
             self.reg_status.setText(str(exc))
             self.reg_status.setStyleSheet("color: red;")
             return
-        self.reg_status.setText(f"Account created for {response['username']}")
-        self.reg_status.setStyleSheet("color: green;")
+
+        # Auto-login right after successful registration
+        try:
+            user = self.api.login(
+                username=self.reg_username.text().strip(),
+                password=self.reg_password.text().strip(),
+            )
+            self.reg_status.setText(f"Welcome, {user.get('username','')}! Account created and logged in.")
+            self.reg_status.setStyleSheet("color: green;")
+            self.authenticated.emit(user)
+        except ServerAPIError as exc:
+            self.reg_status.setText(f"Account created, but login failed: {exc}")
+            self.reg_status.setStyleSheet("color: orange;")
 
 
 # Dashboard --------------------------------------------------------------------
-
 
 class DashboardPage(QWidget):
     def __init__(self, api: ServerAPI):
@@ -325,7 +384,6 @@ class DashboardPage(QWidget):
         stats_layout.addWidget(self.accepted_badge, 1)
         stats_layout.addWidget(self.chats_badge, 1)
 
-        # Weather card
         self.weather_box = QGroupBox("Weather (weather-api)")
         weather_layout = QFormLayout(self.weather_box)
         self.weather_city = QLabel("-")
@@ -337,20 +395,17 @@ class DashboardPage(QWidget):
         weather_layout.addRow("Temperature (°C)", self.weather_temp)
         weather_layout.addRow("Humidity (%)", self.weather_humidity)
 
-        # Latest rides card
         self.rides_box = QGroupBox("Latest Rides (last 5)")
         rides_layout = QVBoxLayout(self.rides_box)
         self.rides_list = QListWidget()
         rides_layout.addWidget(self.rides_list)
         self.refresh_btn = QPushButton("Refresh data")
-        rides_layout.addWidget(self.refresh_btn)
+        self.refresh_btn.clicked.connect(self.refresh)
 
         layout.addWidget(self.stats_box)
         layout.addWidget(self.weather_box)
         layout.addWidget(self.rides_box)
         layout.addStretch()
-
-        self.refresh_btn.clicked.connect(self.refresh)
 
     def refresh(self) -> None:
         try:
@@ -382,7 +437,6 @@ class DashboardPage(QWidget):
 
 
 # Request ride -----------------------------------------------------------------
-
 
 class RequestRidePage(QWidget):
     def __init__(self, api: ServerAPI):
@@ -455,7 +509,6 @@ class RequestRidePage(QWidget):
 
 # Driver search ----------------------------------------------------------------
 
-
 class SearchDriverPage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
@@ -502,23 +555,29 @@ class SearchDriverPage(QWidget):
             self.table.setColumnCount(1)
             self.table.setHorizontalHeaderLabels(["Error"])
             self.table.insertRow(0)
-            self.table.setItem(0, 0, QTableWidgetItem(str(exc)))
+            err = QTableWidgetItem(str(exc))
+            err.setFlags(err.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(0, 0, err)
             return
+
+        def ro(text: str) -> QTableWidgetItem:
+            it = QTableWidgetItem(text)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return it
 
         items = response["items"]
         self.table.setRowCount(len(items))
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["Name", "Area", "Rating", "Vehicle", "Trips/week"])
         for row, driver in enumerate(items):
-            self.table.setItem(row, 0, QTableWidgetItem(driver["name"]))
-            self.table.setItem(row, 1, QTableWidgetItem(driver["area"]))
-            self.table.setItem(row, 2, QTableWidgetItem(str(driver["rating"])))
-            self.table.setItem(row, 3, QTableWidgetItem(driver["vehicle"]))
-            self.table.setItem(row, 4, QTableWidgetItem(str(driver["trips_per_week"])))
+            self.table.setItem(row, 0, ro(driver["name"]))
+            self.table.setItem(row, 1, ro(driver["area"]))
+            self.table.setItem(row, 2, ro(str(driver["rating"])))
+            self.table.setItem(row, 3, ro(driver["vehicle"]))
+            self.table.setItem(row, 4, ro(str(driver["trips_per_week"])))
 
 
 # Chats ------------------------------------------------------------------------
-
 
 class ChatsPage(QWidget):
     def __init__(self, api: ServerAPI):
@@ -526,7 +585,7 @@ class ChatsPage(QWidget):
         self.api = api
         self.current_chat_id: Optional[str] = None
         self.current_chat: Optional[Dict[str, Any]] = None
-        self.palette = THEME_PALETTES["light"]
+        self.palette = THEME_PALETTES["bolt_light"]
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -627,7 +686,6 @@ class ChatsPage(QWidget):
 
 # Trips ------------------------------------------------------------------------
 
-
 class TripsPage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
@@ -679,7 +737,9 @@ class TripsPage(QWidget):
             self.table.setColumnCount(1)
             self.table.setHorizontalHeaderLabels(["Error"])
             self.table.insertRow(0)
-            self.table.setItem(0, 0, QTableWidgetItem(str(exc)))
+            err = QTableWidgetItem(str(exc))
+            err.setFlags(err.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(0, 0, err)
             return
 
         filtered = [
@@ -692,20 +752,324 @@ class TripsPage(QWidget):
             )
         ]
 
+        def ro(text: str) -> QTableWidgetItem:
+            it = QTableWidgetItem(text)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return it
+
         self.table.setRowCount(len(filtered))
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Driver", "Rating", "Date"])
         for row, trip in enumerate(filtered):
-            self.table.setItem(row, 0, QTableWidgetItem(trip["driver"]))
-            self.table.setItem(row, 1, QTableWidgetItem(str(trip["rating"])))
-            self.table.setItem(row, 2, QTableWidgetItem(trip["date"]))
+            self.table.setItem(row, 0, ro(trip["driver"]))
+            self.table.setItem(row, 1, ro(str(trip["rating"])))
+            self.table.setItem(row, 2, ro(trip["date"]))
+
+
+# -------- New: Week-style schedule view (no new imports) --------
+
+class WeekScheduleView(QWidget):
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
+        self.slot_minutes = 15
+        self._blocks: List[Dict[str, str]] = []
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(0)
+        self.grid.setVerticalSpacing(0)
+        self._rebuild_base(8*60, 15*60)  # default 08:00–15:00
+
+    # public
+    def set_blocks(self, blocks: List[Dict[str, str]]) -> None:
+        self._blocks = list(blocks or [])
+        # compute min/max time
+        mins = [self._parse(b["start"]) for b in self._blocks] or [8*60]
+        maxs = [self._parse(b["end"]) for b in self._blocks] or [15*60]
+        mn = min(mins)
+        mx = max(maxs)
+        start = (mn // 60) * 60
+        end = (mx // 60 + (1 if mx % 60 else 0)) * 60
+        start = min(start, 8*60)
+        end = max(end, 15*60)
+        self._rebuild_base(start, end)
+        self._add_events()
+
+    # internals
+    def _clear_layout(self) -> None:
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+    def _rebuild_base(self, start_min: int, end_min: int) -> None:
+        self._clear_layout()
+        border = THEME_PALETTES["bolt_light"]["border"]
+        list_bg = THEME_PALETTES["bolt_light"]["list_bg"]
+
+        total_slots = (end_min - start_min) // self.slot_minutes
+
+        # headers
+        head = QLabel("")  # corner
+        head.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.grid.addWidget(head, 0, 0)
+
+        for c, day in enumerate(self.days, start=1):
+            lbl = QLabel(day)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("font-weight:700; padding:6px;")
+            self.grid.addWidget(lbl, 0, c)
+
+        # rows & grid cells
+        for r in range(total_slots):
+            minutes = start_min + r*self.slot_minutes
+            show_text = (minutes % 60 == 0)
+            tlabel = QLabel(f"{minutes//60:02d}:00" if show_text else "")
+            tlabel.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            tlabel.setStyleSheet("padding-right:6px;")
+            self.grid.addWidget(tlabel, r+1, 0)
+
+            for c in range(len(self.days)):
+                cell = QFrame()
+                cell.setStyleSheet(
+                    f"background:{list_bg}; border:1px solid {border}; border-left:none;"
+                )
+                self.grid.addWidget(cell, r+1, c+1)
+
+        # stretches
+        for r in range(total_slots):
+            self.grid.setRowStretch(r+1, 1)
+        for c in range(len(self.days)+1):
+            self.grid.setColumnStretch(c, 1)
+
+    def _add_events(self) -> None:
+        # place events with rowSpan according to duration
+        for b in self._blocks:
+            day = b.get("day","Monday")
+            if day not in self.days:
+                continue
+            c = self.days.index(day) + 1
+            start = self._parse(b["start"])
+            end = self._parse(b["end"])
+            row0 = 1 + self._row_index(start)
+            row1 = 1 + self._row_index(end)
+            span = max(1, row1 - row0)
+
+            title = b.get("label") or "Campus"
+            bg, fg = self._color_for(title)
+
+            card = QFrame()
+            card.setStyleSheet(
+                f"background:{bg}; color:{fg}; border-radius:8px; margin:2px;"
+            )
+            inner = QVBoxLayout(card)
+            inner.setContentsMargins(8, 6, 8, 6)
+            inner.setSpacing(2)
+            txt = QLabel(f"{title}\n{b['start']}-{b['end']}")
+            txt.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            txt.setStyleSheet("font-weight:700;" if fg == "#FFFFFF" else "font-weight:600;")
+            inner.addWidget(txt)
+
+            self.grid.addWidget(card, row0, c, span, 1)
+
+    def _row_index(self, minute_of_day: int) -> int:
+        # relative to current grid start
+        # row 0 (grid row 1) corresponds to start_min (kept as first time label row)
+        # compute from first time label on the layout (readable via label at row=1, col=0 text)
+        # we store start at 08:00 baseline by counting rows between 0 label and target; simpler: recompute:
+        # find first time label
+        # For simplicity, we derive from first visible slot time by scanning (fast enough here).
+        # But we know slot 1 label text; reconstruct start from that:
+        start_text = ""
+        w = self.grid.itemAtPosition(1, 0)
+        if w and isinstance(w.widget(), QLabel):
+            start_text = w.widget().text()
+        # fallback: assume 08:00
+        start_hour = 8
+        if start_text:
+            try:
+                start_hour = int(start_text.split(":")[0])
+            except Exception:
+                start_hour = 8
+        start_min = start_hour * 60
+        return (minute_of_day - start_min) // self.slot_minutes
+
+    def _parse(self, hhmm: str) -> int:
+        try:
+            h = int(hhmm[0:2]); m = int(hhmm[3:5])
+            return h*60 + m
+        except Exception:
+            return 8*60
+
+    def _color_for(self, label: str) -> (str, str):
+        up = label.upper()
+        if "EECE 321" in up:
+            return "#2E7D32", "#FFFFFF"   # green
+        if "EECE 334" in up:
+            return "#D32F2F", "#FFFFFF"   # red
+        if "EECE 338" in up:
+            return "#000000", "#FFFFFF"   # black
+        if "MATH" in up:
+            return "#7E57C2", "#FFFFFF"   # purple
+        if "INDE" in up:
+            return "#F28B82", "#000000"   # soft pink
+        return "#34BB78", "#FFFFFF"       # Bolt green default
+
+
+# Schedule page (with week view + table)
+
+class SchedulePage(QWidget):
+    def __init__(self, api: ServerAPI):
+        super().__init__()
+        self.api = api
+        self.blocks: List[Dict[str, str]] = []  # [{'day': 'Monday','start':'08:00','end':'12:00','label': 'EECE 321'}, ...]
+
+        days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+
+        layout = QVBoxLayout(self)
+
+        # ---- Add block form ----
+        form_box = QGroupBox("Add a time block")
+        form = QGridLayout(form_box)
+
+        self.day_dd = QComboBox(); self.day_dd.addItems(days)
+        self.label_in = QLineEdit(); self.label_in.setPlaceholderText("Label (optional) e.g., EECE 321")
+
+        self.start_h = QSpinBox(); self.start_h.setRange(0, 23)
+        self.end_h   = QSpinBox(); self.end_h.setRange(0, 23)
+        self.start_m = QComboBox(); self.start_m.addItems(["00","15","30","45"])
+        self.end_m   = QComboBox(); self.end_m.addItems(["00","15","30","45"])
+
+        add_btn = QPushButton("Add block")
+        add_btn.clicked.connect(self._add_block)
+
+        form.addWidget(QLabel("Day"),          0, 0); form.addWidget(self.day_dd,  0, 1)
+        form.addWidget(QLabel("Label"),        1, 0); form.addWidget(self.label_in, 1, 1)
+        form.addWidget(QLabel("Start (h:m)"),  2, 0)
+        row1 = QHBoxLayout(); w1 = QWidget(); w1.setLayout(row1)
+        row1.addWidget(self.start_h); row1.addWidget(QLabel(":")); row1.addWidget(self.start_m)
+        form.addWidget(w1, 2, 1)
+        form.addWidget(QLabel("End (h:m)"),    3, 0)
+        row2 = QHBoxLayout(); w2 = QWidget(); w2.setLayout(row2)
+        row2.addWidget(self.end_h); row2.addWidget(QLabel(":")); row2.addWidget(self.end_m)
+        form.addWidget(w2, 3, 1)
+        form.addWidget(add_btn, 4, 0, 1, 2)
+
+        # ---- Visual week view (like the screenshot) ----
+        self.preview = WeekScheduleView()
+        preview_box = QGroupBox("Week")
+        pv = QVBoxLayout(preview_box)
+        pv.addWidget(self.preview)
+
+        # ---- Table (for quick remove/save) ----
+        table_box = QGroupBox("Blocks")
+        tlayout = QVBoxLayout(table_box)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Day", "Start", "End", "Label"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        def ro(text: str) -> QTableWidgetItem:
+            it = QTableWidgetItem(text)
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            return it
+        self._ro = ro
+
+        actions = QHBoxLayout()
+        self.remove_btn = QPushButton("Remove selected")
+        self.remove_btn.clicked.connect(self._remove_selected)
+        self.save_btn = QPushButton("Save schedule")
+        self.save_btn.clicked.connect(self._save)
+        self.back_btn = QPushButton("Back to Profile")
+        self.back_btn.clicked.connect(self._back_to_profile)
+        actions.addWidget(self.remove_btn)
+        actions.addStretch()
+        actions.addWidget(self.back_btn)
+        actions.addWidget(self.save_btn)
+
+        self.status = QLabel()
+
+        tlayout.addWidget(self.table)
+        tlayout.addLayout(actions)
+        tlayout.addWidget(self.status)
+
+        # assemble
+        layout.addWidget(form_box)
+        layout.addWidget(preview_box, 1)
+        layout.addWidget(table_box)
+
+    # public
+    def load_from_user(self, user: Dict[str, Any]) -> None:
+        self.blocks = list(user.get("schedule") or [])
+        self._render()
+
+    # helpers
+    def _fmt(self, h: int, m_txt: str) -> str:
+        return f"{h:02d}:{m_txt}"
+
+    def _add_block(self) -> None:
+        day = self.day_dd.currentText()
+        label = self.label_in.text().strip()
+        start = self._fmt(self.start_h.value(), self.start_m.currentText())
+        end   = self._fmt(self.end_h.value(),   self.end_m.currentText())
+        if start >= end:
+            self._set_status("End time must be after start time.", bad=True)
+            return
+        self.blocks.append({"day": day, "start": start, "end": end, "label": label})
+        self._render()
+        self._set_status("Added block.", bad=False)
+        self.label_in.clear()
+
+    def _remove_selected(self) -> None:
+        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
+        if not rows:
+            self._set_status("Select a row to remove.", bad=True)
+            return
+        for r in rows:
+            if 0 <= r < len(self.blocks):
+                self.blocks.pop(r)
+        self._render()
+        self._set_status("Removed.", bad=False)
+
+    def _render(self) -> None:
+        # table
+        self.table.setRowCount(len(self.blocks))
+        for r, b in enumerate(self.blocks):
+            self.table.setItem(r, 0, self._ro(b.get("day","")))
+            self.table.setItem(r, 1, self._ro(b.get("start","")))
+            self.table.setItem(r, 2, self._ro(b.get("end","")))
+            self.table.setItem(r, 3, self._ro(b.get("label","")))
+        # preview
+        self.preview.set_blocks(self.blocks)
+
+    def _save(self) -> None:
+        try:
+            updated = self.api.update_profile({"schedule": self.blocks})
+            w = self.window()
+            if hasattr(w, "user") and isinstance(updated, dict):
+                try:
+                    w.user = {**w.user, **updated}
+                except Exception:
+                    pass
+            self._set_status("Schedule saved.", bad=False)
+        except ServerAPIError as exc:
+            self._set_status(str(exc), bad=True)
+
+    def _back_to_profile(self) -> None:
+        w = self.window()
+        if hasattr(w, "_open_profile"):
+            w._open_profile()
+
+    def _set_status(self, msg: str, *, bad: bool) -> None:
+        self.status.setText(msg)
+        self.status.setStyleSheet("color: red;" if bad else "color: green;")
 
 
 # Profile ----------------------------------------------------------------------
 
-
 class ProfilePage(QWidget):
     theme_changed = pyqtSignal(str)
+    schedule_requested = pyqtSignal()
 
     def __init__(self, api: ServerAPI):
         super().__init__()
@@ -720,13 +1084,9 @@ class ProfilePage(QWidget):
         self.area_input = QLineEdit()
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.role_combo = QComboBox()
-        self.role_combo.addItems(["passenger", "driver"])
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["light", "dark"])
-        self.notifications_combo = QComboBox()
-        self.notifications_combo.addItems(["enabled", "disabled"])
-
+        self.role_combo = QComboBox(); self.role_combo.addItems(["passenger", "driver"])
+        self.theme_combo = QComboBox(); self.theme_combo.addItems(["bolt_light", "bolt_dark", "light", "dark"])
+        self.notifications_combo = QComboBox(); self.notifications_combo.addItems(["enabled", "disabled"])
         form.addRow("Username", self.username_input)
         form.addRow("Email", self.email_input)
         form.addRow("Area", self.area_input)
@@ -736,7 +1096,8 @@ class ProfilePage(QWidget):
         form.addRow("Notifications", self.notifications_combo)
 
         self.schedule_btn = QPushButton("Schedule")
-        self.schedule_btn.setToolTip("Add commuting blocks (future extension)")
+        self.schedule_btn.setToolTip("Define your campus commute blocks")
+        self.schedule_btn.clicked.connect(lambda: self.schedule_requested.emit())
 
         self.save_btn = QPushButton("Save profile")
         self.save_btn.clicked.connect(self._save)
@@ -754,7 +1115,7 @@ class ProfilePage(QWidget):
         self.email_input.setText(user.get("email", ""))
         self.area_input.setText(user.get("area", ""))
         self.role_combo.setCurrentText(user.get("role", "passenger"))
-        self.theme_combo.setCurrentText(user.get("theme", "light"))
+        self.theme_combo.setCurrentText(user.get("theme", "bolt_light"))
         self.notifications_combo.setCurrentText("enabled" if user.get("notifications", True) else "disabled")
 
     def _save(self) -> None:
@@ -768,7 +1129,8 @@ class ProfilePage(QWidget):
             "notifications": self.notifications_combo.currentText() == "enabled",
         }
         try:
-            self.api.update_profile(profile_data)
+            updated = self.api.update_profile(profile_data)
+            self.user.update(updated or {})
         except ServerAPIError as exc:
             self.status_label.setText(str(exc))
             self.status_label.setStyleSheet("color: red;")
@@ -781,9 +1143,8 @@ class ProfilePage(QWidget):
 
 # Main window ------------------------------------------------------------------
 
-
 class MainWindow(QMainWindow):
-    def __init__(self, api: Optional[ServerAPI] = None, theme: str = "light"):
+    def __init__(self, api: Optional[ServerAPI] = None, theme: str = "bolt_light"):
         super().__init__()
         self.api = api or MockServerAPI()
         self.theme = theme
@@ -792,24 +1153,11 @@ class MainWindow(QMainWindow):
         self.user: Optional[Dict[str, Any]] = None
 
         central = QWidget()
-        layout = QHBoxLayout(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.nav = QListWidget()
-        self.nav.setObjectName("navList")
-        self.nav.setSpacing(6)
-        self.nav.setFrameShape(QFrame.Shape.NoFrame)
-        for label in [
-            "Sign in / Sign up",
-            "Dashboard",
-            "Request Ride",
-            "Search Drivers",
-            "Chats",
-            "Profile",
-            "Trips",
-        ]:
-            self.nav.addItem(label)
-        self.nav.setFixedWidth(200)
-
+        # pages
         self.stack = QStackedWidget()
         self.auth_page = AuthPage(self.api)
         self.dashboard_page = DashboardPage(self.api)
@@ -818,6 +1166,7 @@ class MainWindow(QMainWindow):
         self.chats_page = ChatsPage(self.api)
         self.profile_page = ProfilePage(self.api)
         self.trips_page = TripsPage(self.api)
+        self.schedule_page = SchedulePage(self.api)
 
         for page in [
             self.auth_page,
@@ -827,31 +1176,78 @@ class MainWindow(QMainWindow):
             self.chats_page,
             self.profile_page,
             self.trips_page,
+            self.schedule_page,
         ]:
             self.stack.addWidget(page)
 
-        layout.addWidget(self.nav)
-        layout.addWidget(self.stack, 1)
+        # bottom nav
+        self.bottom_nav = QFrame()
+        self.bottom_nav.setObjectName("bottomNav")
+        bn = QHBoxLayout(self.bottom_nav)
+        bn.setContentsMargins(8, 4, 8, 6)
+        bn.setSpacing(2)
+
+        self._tabs = [
+            ("Dashboard", self.dashboard_page),
+            ("Request",   self.request_page),
+            ("Drivers",   self.search_page),
+            ("Chats",     self.chats_page),
+            ("Trips",     self.trips_page),
+            ("Profile",   self.profile_page),
+        ]
+        self._tab_buttons: List[QPushButton] = []
+        for i, (label, _) in enumerate(self._tabs):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _=False, idx=i: self._switch_tab(idx))
+            bn.addWidget(btn, 1)
+            self._tab_buttons.append(btn)
+
+        root.addWidget(self.stack, 1)
+        root.addWidget(self.bottom_nav, 0)
         self.setCentralWidget(central)
 
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.nav.setCurrentRow(0)
+        # auth gate
+        self.stack.setCurrentWidget(self.auth_page)
+        self.bottom_nav.setVisible(False)
 
+        # hooks
         self.auth_page.authenticated.connect(self._on_authenticated)
         self.profile_page.theme_changed.connect(self.apply_theme)
+        self.profile_page.schedule_requested.connect(self._open_schedule)
         self.apply_theme(theme)
+
+    def _switch_tab(self, idx: int) -> None:
+        if self.user is None:
+            self.statusBar().showMessage("Please sign in first.", 2500)
+            self.stack.setCurrentWidget(self.auth_page)
+            return
+        for j, b in enumerate(self._tab_buttons):
+            b.setChecked(j == idx)
+        self.stack.setCurrentWidget(self._tabs[idx][1])
 
     def _on_authenticated(self, user: Dict[str, Any]) -> None:
         self.user = user
         self.profile_page.load_user(user)
+        self.schedule_page.load_from_user(user)  # hydrate schedule
         self.statusBar().showMessage(f"Logged in as {user['username']}")
         self.apply_theme(user.get("theme", self.theme))
+
+        self.bottom_nav.setVisible(True)
         self.dashboard_page.refresh()
         self.search_page.refresh()
         self.chats_page.refresh()
         self.trips_page.refresh()
-        self.stack.setCurrentWidget(self.dashboard_page)
-        self.nav.setCurrentRow(1)
+
+        self._switch_tab(0)
+
+    def _open_schedule(self) -> None:
+        if self.user:
+            self.schedule_page.load_from_user(self.user)
+        self.stack.setCurrentWidget(self.schedule_page)
+
+    def _open_profile(self) -> None:
+        self.stack.setCurrentWidget(self.profile_page)
 
     def apply_theme(self, theme: str) -> None:
         app = QApplication.instance()
@@ -859,15 +1255,14 @@ class MainWindow(QMainWindow):
             return
         self.theme = theme
         app.setStyleSheet(build_stylesheet(theme))
-        self.chats_page.set_palette(THEME_PALETTES.get(theme, THEME_PALETTES["light"]))
+        self.chats_page.set_palette(THEME_PALETTES.get(theme, THEME_PALETTES["bolt_light"]))
 
 
 # Entrypoint -------------------------------------------------------------------
 
-
 def run() -> None:
     app = QApplication(sys.argv)
-    default_theme = "light"
+    default_theme = "bolt_light"
     app.setStyleSheet(build_stylesheet(default_theme))
     window = MainWindow(theme=default_theme)
     window.show()
