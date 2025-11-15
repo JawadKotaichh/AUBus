@@ -306,7 +306,7 @@ def handle_cancel_ride_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server("Completed rides cannot be canceled.")
 
     db_update_response = update_ride(
-        ride_id=ride_id,
+        ride_id=str(ride_id),
         comment=reason,
         status=RideStatus.CANCELED.value,
         rider_rating=None,
