@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional, Tuple
 from db.ride import create_ride, update_ride, get_ride, RideStatus
 from db.matching import compute_driver_to_rider_info
 from db.protocol_db_server import db_msg_status
-from server_client_protocol import (
+from server.server_client_protocol import (
     ServerResponse,
     server_response_type,
     msg_status,
@@ -14,7 +14,7 @@ from db.user_db import (
     get_rides_rider,
     get_user_location,
 )
-from utils import _error_server, _ok_server
+from server.utils import _error_server, _ok_server
 from db.maps_service import get_closest_online_drivers, geocode_address
 from db.zones import zone_for_coordinates
 
@@ -493,7 +493,7 @@ def _resolve_passenger_coordinates(
         )
         return None, None, None, err
 
-    output = location_response.payload.get("output") or {}
+    output = location_response.payload.get("output")
     lat = output.get("latitude")
     lng = output.get("longitude")
     area = output.get("area")
@@ -515,7 +515,6 @@ def _coerce_min_avg_rating(value: Any) -> Tuple[Optional[float], Optional[str]]:
     if rating < 0:
         return None, "min_avg_rating must be >= 0."
     return rating, None
-
 
 def automated_request(payload: Dict[str, Any]) -> ServerResponse:
     """
@@ -550,11 +549,25 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
 
     rider_id = session_response.payload["output"]["user_id"]
 
-    passenger_area, passenger_lat, passenger_long, location_error = (
+    passenger_area, lat_raw, long_raw, location_error = (
         _resolve_passenger_coordinates(rider_id, is_at_aub)
     )
     if location_error:
         return _error_server(location_error)
+
+
+    if lat_raw is None or long_raw is None:
+        return _error_server(
+            "Unable to determine rider coordinates: latitude/longitude are missing."
+        )
+    try:
+        passenger_lat = float(lat_raw)
+        passenger_long = float(long_raw)
+    except (TypeError, ValueError):
+        return _error_server(
+            "Invalid rider coordinates: latitude/longitude must be numeric."
+        )
+
 
     zone = zone_for_coordinates(passenger_lat, passenger_long)
     passenger_zone = zone.name if zone else None
