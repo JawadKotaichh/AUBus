@@ -34,6 +34,7 @@ def handle_p2p(
     )
 
 
+# TODO: do not give the driver the maps link unless the rider accepted his request
 def handle_preview_ride_request(payload: Dict[str, Any]) -> ServerResponse:
     """
     Allow drivers to inspect a rider before committing to the ride.
@@ -128,7 +129,136 @@ def handle_preview_ride_request(payload: Dict[str, Any]) -> ServerResponse:
     )
 
 
-# Create ride after driver accepted the request and the rider confirmed it
+def handle_driver_accepts_ride(driver_id: int, ride_id: int) -> ServerResponse:
+    ride_response = get_ride(ride_id)
+    if ride_response.status != db_msg_status.OK:
+        err = (
+            ride_response.payload.get("error")
+            if ride_response.payload
+            else "Ride lookup failed."
+        )
+        return _error_server(f"Unable to load ride: {err}")
+
+    ride_data = ride_response.payload["output"]
+    rider_id = ride_data.get("rider_id")
+    if rider_id is None:
+        return _error_server("Ride is missing rider information.")
+
+    rider_profile_response = get_user_profile(rider_id)
+    if rider_profile_response.status != db_msg_status.OK:
+        err = (
+            rider_profile_response.payload.get("error")
+            if rider_profile_response.payload
+            else "Unable to fetch rider profile."
+        )
+        return _error_server(f"Rider profile lookup failed: {err}")
+
+    try:
+        info = compute_driver_to_rider_info(driver_id, rider_id)
+    except Exception as exc:
+        return _error_server(f"Unable to compute trip details: {exc}")
+
+    rider_profile = rider_profile_response.payload.get("output") or {}
+
+    payload = {
+        "ride_id": ride_id,
+        "driver_id": driver_id,
+        "rider_id": rider_id,
+        "rider_avg_rating": rider_profile.get("avg_rating_rider"),
+        "rider_completed_rides": rider_profile.get("number_of_rides_rider"),
+        **info,
+    }
+
+    return ServerResponse(
+        type=server_response_type.RIDE_UPDATED,
+        status=msg_status.OK,
+        payload=payload,
+    )
+
+
+def handle_cancel_ride_request(payload: Dict[str, Any]) -> ServerResponse:
+    """Cancel a ride when either participant aborts the connection."""
+    required_fields = ["ride_id", "session_id"]
+    missing = [field for field in required_fields if field not in payload]
+    if missing:
+        return _error_server(
+            f"Missing fields in cancel ride payload: {', '.join(missing)}"
+        )
+
+    try:
+        ride_id = int(payload["ride_id"])
+    except (TypeError, ValueError):
+        return _error_server("ride_id must be an integer.")
+    session_id = str(payload["session_id"])
+    reason = str(payload.get("reason") or "").strip()
+
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error"
+        )
+        return _error_server(f"Session verification failed: {err}")
+    requester_id = session_response.payload["output"]["user_id"]
+
+    ride_response = get_ride(ride_id)
+    if ride_response.status != db_msg_status.OK:
+        err = (
+            ride_response.payload.get("error")
+            if ride_response.payload
+            else "Ride lookup failed."
+        )
+        return _error_server(f"Unable to cancel ride: {err}")
+    ride_data = ride_response.payload["output"]
+    rider_id = ride_data.get("rider_id")
+    driver_id = ride_data.get("driver_id")
+
+    if requester_id not in {rider_id, driver_id}:
+        return _error_server(
+            "You are not allowed to cancel this ride.", status=msg_status.INVALID_INPUT
+        )
+
+    current_status = str(ride_data.get("status") or "").upper()
+    if current_status == RideStatus.CANCELED.value:
+        return _ok_server(
+            payload={
+                "ride_id": ride_id,
+                "status": RideStatus.CANCELED.value,
+                "message": "Ride already canceled.",
+            },
+            resp_type=server_response_type.RIDE_UPDATED,
+        )
+    if current_status == RideStatus.COMPLETE.value:
+        return _error_server("Completed rides cannot be canceled.")
+
+    db_update_response = update_ride(
+        ride_id=str(ride_id),
+        comment=reason,
+        status=RideStatus.CANCELED.value,
+        rider_rating=None,
+        driver_rating=None,
+    )
+    if db_update_response.status != db_msg_status.OK:
+        err = (
+            db_update_response.payload.get("error")
+            if db_update_response.payload
+            else "Unknown cancellation error"
+        )
+        return _error_server(f"Ride cancellation failed: {err}")
+
+    return _ok_server(
+        payload={
+            "ride_id": ride_id,
+            "status": RideStatus.CANCELED.value,
+            "reason": reason,
+            "canceled_by": requester_id,
+        },
+        resp_type=server_response_type.RIDE_UPDATED,
+    )
+
+
+# Create ride after driver acceptance of the request and the rider confirmed it
 def handle_creation_of_ride_request(
     payload: Dict[str, Any],
 ) -> ServerResponse:
@@ -246,135 +376,6 @@ def handle_update_ride_request(
             "comment": comment,
         },
         resp_type=server_response_type.RIDE_UPDATED,
-    )
-
-
-def handle_cancel_ride_request(payload: Dict[str, Any]) -> ServerResponse:
-    """Cancel a ride when either participant aborts the connection."""
-    required_fields = ["ride_id", "session_id"]
-    missing = [field for field in required_fields if field not in payload]
-    if missing:
-        return _error_server(
-            f"Missing fields in cancel ride payload: {', '.join(missing)}"
-        )
-
-    try:
-        ride_id = int(payload["ride_id"])
-    except (TypeError, ValueError):
-        return _error_server("ride_id must be an integer.")
-    session_id = str(payload["session_id"])
-    reason = str(payload.get("reason") or "").strip()
-
-    session_response = get_active_session(session_id=session_id)
-    if session_response.status != db_msg_status.OK:
-        err = (
-            session_response.payload.get("error")
-            if session_response.payload
-            else "Unknown session error"
-        )
-        return _error_server(f"Session verification failed: {err}")
-    requester_id = session_response.payload["output"]["user_id"]
-
-    ride_response = get_ride(ride_id)
-    if ride_response.status != db_msg_status.OK:
-        err = (
-            ride_response.payload.get("error")
-            if ride_response.payload
-            else "Ride lookup failed."
-        )
-        return _error_server(f"Unable to cancel ride: {err}")
-    ride_data = ride_response.payload["output"]
-    rider_id = ride_data.get("rider_id")
-    driver_id = ride_data.get("driver_id")
-
-    if requester_id not in {rider_id, driver_id}:
-        return _error_server(
-            "You are not allowed to cancel this ride.", status=msg_status.INVALID_INPUT
-        )
-
-    current_status = str(ride_data.get("status") or "").upper()
-    if current_status == RideStatus.CANCELED.value:
-        return _ok_server(
-            payload={
-                "ride_id": ride_id,
-                "status": RideStatus.CANCELED.value,
-                "message": "Ride already canceled.",
-            },
-            resp_type=server_response_type.RIDE_UPDATED,
-        )
-    if current_status == RideStatus.COMPLETE.value:
-        return _error_server("Completed rides cannot be canceled.")
-
-    db_update_response = update_ride(
-        ride_id=str(ride_id),
-        comment=reason,
-        status=RideStatus.CANCELED.value,
-        rider_rating=None,
-        driver_rating=None,
-    )
-    if db_update_response.status != db_msg_status.OK:
-        err = (
-            db_update_response.payload.get("error")
-            if db_update_response.payload
-            else "Unknown cancellation error"
-        )
-        return _error_server(f"Ride cancellation failed: {err}")
-
-    return _ok_server(
-        payload={
-            "ride_id": ride_id,
-            "status": RideStatus.CANCELED.value,
-            "reason": reason,
-            "canceled_by": requester_id,
-        },
-        resp_type=server_response_type.RIDE_UPDATED,
-    )
-
-
-def handle_driver_accepts_ride(driver_id: int, ride_id: int) -> ServerResponse:
-    ride_response = get_ride(ride_id)
-    if ride_response.status != db_msg_status.OK:
-        err = (
-            ride_response.payload.get("error")
-            if ride_response.payload
-            else "Ride lookup failed."
-        )
-        return _error_server(f"Unable to load ride: {err}")
-
-    ride_data = ride_response.payload["output"]
-    rider_id = ride_data.get("rider_id")
-    if rider_id is None:
-        return _error_server("Ride is missing rider information.")
-
-    rider_profile_response = get_user_profile(rider_id)
-    if rider_profile_response.status != db_msg_status.OK:
-        err = (
-            rider_profile_response.payload.get("error")
-            if rider_profile_response.payload
-            else "Unable to fetch rider profile."
-        )
-        return _error_server(f"Rider profile lookup failed: {err}")
-
-    try:
-        info = compute_driver_to_rider_info(driver_id, rider_id)
-    except Exception as exc:
-        return _error_server(f"Unable to compute trip details: {exc}")
-
-    rider_profile = rider_profile_response.payload.get("output") or {}
-
-    payload = {
-        "ride_id": ride_id,
-        "driver_id": driver_id,
-        "rider_id": rider_id,
-        "rider_avg_rating": rider_profile.get("avg_rating_rider"),
-        "rider_completed_rides": rider_profile.get("number_of_rides_rider"),
-        **info,
-    }
-
-    return ServerResponse(
-        type=server_response_type.RIDE_UPDATED,
-        status=msg_status.OK,
-        payload=payload,
     )
 
 
