@@ -1,11 +1,12 @@
 """
 Networking helpers for the AUBus client.
 
-`ServerAPI` implements a thin JSON-over-TCP protocol that the GUI can use to
-interact with the backend service.  A simple `MockServerAPI` is also provided so
-that the GUI remains usable without an actual server/database while keeping the
-same public surface.
+`ServerAPI` implements the JSON-over-TCP protocol that the GUI can use to
+interact with the backend authentication service.  A simple `MockServerAPI` is
+also provided so that the GUI remains usable without an actual
+server/database while keeping the same public surface.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,41 +16,97 @@ import time
 from typing import Any, Dict, List, Optional
 
 
+_ACTION_TO_REQUEST_TYPE = {
+    "register": 1,  # client_request_type.REGISTER_USER
+    "login": 2,  # client_request_type.LOGIN_USER
+    "update_profile": 10,  # client_request_type.UPDATE_PROFILE
+}
+_SERVER_STATUS_OK = 1
+_DEFAULT_THEME = "bolt_light"
+
+
 class ServerAPIError(RuntimeError):
     """Raised when the server reports an error or the request fails."""
 
 
 class ServerAPI:
     """
-    Minimal JSON-over-socket API.
+    Minimal JSON-over-socket API that speaks the backend protocol.
 
-    The protocol is intentionally small: each request is a single JSON object
-    with an `action` key and an optional `payload`.  The server is expected to
-    reply with `{"status": "ok", "data": ...}` or
-    `{"status": "error", "message": "..."}` terminated by a newline.
+    Each request is a newline-delimited JSON object with numeric `type`
+    (mirroring `client_request_type` on the server) and a `payload` dict.  The
+    backend replies with `{"type": .., "status": .., "payload": {"output": ...}}`.
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 9000, timeout: float = 8.0) -> None:
+    def __init__(
+        self, host: str = "127.0.0.1", port: int = 5000, timeout: float = 8.0
+    ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
+        self._user_profiles: Dict[str, Dict[str, Any]] = {}
 
     # Public API -----------------------------------------------------------------
-    def register_user(self, *, name: str, email: str, username: str, password: str, role: str, area: str) -> Dict[str, Any]:
-        return self._send_request(
-            "register",
-            {
-                "name": name,
-                "email": email,
-                "username": username,
-                "password": password,
-                "role": role,
-                "area": area,
-            },
-        )
+    def register_user(
+        self,
+        *,
+        name: str,
+        email: str,
+        username: str,
+        password: str,
+        role: str | bool,
+        area: str,
+    ) -> Dict[str, Any]:
+        role_text = role if isinstance(role, str) and role.strip() else "passenger"
+        normalized_role = role_text.strip().lower()
+        profile = {
+            "name": (name or "").strip(),
+            "email": (email or "").strip(),
+            "username": (username or "").strip(),
+            "area": (area or "").strip(),
+            "role": "driver" if normalized_role == "driver" else "passenger",
+            "theme": _DEFAULT_THEME,
+            "notifications": True,
+        }
+        payload = {
+            "name": profile["name"],
+            "email": profile["email"],
+            "username": profile["username"],
+            "password": password,
+            "area": profile["area"],
+            "is_driver": 1 if profile["role"] == "driver" else 0,
+        }
+        output = self._send_request("register", payload)
+        if profile["username"]:
+            username_key = str(profile["username"]).lower()
+            self._user_profiles[username_key] = profile
+        return output
 
     def login(self, *, username: str, password: str) -> Dict[str, Any]:
-        return self._send_request("login", {"username": username, "password": password})
+        output = self._send_request(
+            "login", {"username": username, "password": password}
+        )
+        if not isinstance(output, dict):
+            raise ServerAPIError("Unexpected payload returned by backend login.")
+
+        cache_key = username.strip().lower()
+        profile = self._user_profiles.get(cache_key, {})
+        profile.setdefault("username", username.strip())
+        profile.setdefault("email", "")
+        profile.setdefault("name", profile.get("username"))
+        profile.setdefault("area", "")
+        profile.setdefault("role", "passenger")
+        profile.setdefault("theme", _DEFAULT_THEME)
+        profile.setdefault("notifications", True)
+        profile["user_id"] = output.get("user_id")
+
+        merged_user = {
+            **profile,
+            "session_token": output.get("session_token"),
+            "user_id": output.get("user_id"),
+        }
+        self._user_profiles[cache_key] = profile
+        return merged_user
 
     def fetch_weather(self) -> Dict[str, Any]:
         return self._send_request("weather", None)
@@ -77,9 +134,12 @@ class ServerAPI:
             },
         )
 
-    def request_ride(self, *, departure: str, destination: str, when: str) -> Dict[str, Any]:
+    def request_ride(
+        self, *, departure: str, destination: str, when: str
+    ) -> Dict[str, Any]:
         return self._send_request(
-            "request_ride", {"departure": departure, "destination": destination, "when": when}
+            "request_ride",
+            {"departure": departure, "destination": destination, "when": when},
         )
 
     def ride_status(self, request_id: str) -> Dict[str, Any]:
@@ -88,7 +148,9 @@ class ServerAPI:
     def cancel_ride(self, request_id: str) -> Dict[str, Any]:
         return self._send_request("cancel_ride", {"request_id": request_id})
 
-    def fetch_trips(self, *, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def fetch_trips(
+        self, *, filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
         return self._send_request("trips", {"filters": filters or {}})
 
     def fetch_chats(self) -> List[Dict[str, Any]]:
@@ -102,16 +164,32 @@ class ServerAPI:
 
     # Internal helpers -----------------------------------------------------------
     def _send_request(self, action: str, payload: Optional[Dict[str, Any]]) -> Any:
-        request = {"action": action, "payload": payload or {}}
+        if action not in _ACTION_TO_REQUEST_TYPE:
+            raise ServerAPIError(f"Action {action!r} is not supported by the backend.")
+        request = {
+            "type": _ACTION_TO_REQUEST_TYPE[action],
+            "payload": payload or {},
+        }
         raw = (json.dumps(request) + "\n").encode("utf-8")
 
-        with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
-            sock.sendall(raw)
-            response = self._read_response(sock)
+        try:
+            with socket.create_connection(
+                (self.host, self.port), timeout=self.timeout
+            ) as sock:
+                sock.sendall(raw)
+                response = self._read_response(sock)
+        except OSError as exc:
+            raise ServerAPIError(
+                f"Unable to reach backend at {self.host}:{self.port}: {exc}"
+            ) from exc
 
-        if response.get("status") != "ok":
-            raise ServerAPIError(response.get("message", "Unknown server error"))
-        return response.get("data")
+        payload_wrapper = response.get("payload")
+        if not isinstance(payload_wrapper, dict):
+            payload_wrapper = {}
+        if response.get("status") != _SERVER_STATUS_OK:
+            message = payload_wrapper.get("error") or "Backend rejected the request."
+            raise ServerAPIError(message)
+        return payload_wrapper.get("output")
 
     def _read_response(self, sock: socket.socket) -> Dict[str, Any]:
         buffer = bytearray()
@@ -152,6 +230,7 @@ class MockServerAPI(ServerAPI):
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self.db = MockDatabase(
             drivers=[
                 {
@@ -174,8 +253,20 @@ class MockServerAPI(ServerAPI):
                 },
             ],
             rides=[
-                {"id": "ride-1", "from": "Hamra", "to": "AUB Main Gate", "time": _ts_offset(60), "status": "pending"},
-                {"id": "ride-2", "from": "Verdun", "to": "AUB Medical Gate", "time": _ts_offset(120), "status": "accepted"},
+                {
+                    "id": "ride-1",
+                    "from": "Hamra",
+                    "to": "AUB Main Gate",
+                    "time": _ts_offset(60),
+                    "status": "pending",
+                },
+                {
+                    "id": "ride-2",
+                    "from": "Verdun",
+                    "to": "AUB Medical Gate",
+                    "time": _ts_offset(120),
+                    "status": "accepted",
+                },
             ],
             chats=[
                 {
@@ -197,9 +288,24 @@ class MockServerAPI(ServerAPI):
                 },
             ],
             trips=[
-                {"trip_id": "trip-11", "driver": "Lina A.", "rating": 5.0, "date": "2025-10-03"},
-                {"trip_id": "trip-12", "driver": "Omar K.", "rating": 4.5, "date": "2025-10-04"},
-                {"trip_id": "trip-13", "driver": "Layal S.", "rating": 4.8, "date": "2025-10-05"},
+                {
+                    "trip_id": "trip-11",
+                    "driver": "Lina A.",
+                    "rating": 5.0,
+                    "date": "2025-10-03",
+                },
+                {
+                    "trip_id": "trip-12",
+                    "driver": "Omar K.",
+                    "rating": 4.5,
+                    "date": "2025-10-04",
+                },
+                {
+                    "trip_id": "trip-13",
+                    "driver": "Layal S.",
+                    "rating": 4.8,
+                    "date": "2025-10-05",
+                },
             ],
         )
         self._user = {
@@ -258,7 +364,9 @@ class MockServerAPI(ServerAPI):
             drivers = [d for d in drivers if d["area"].lower() == area.lower()]
         sort = payload.get("sort") or "rating"
         reverse = sort == "rating"
-        drivers = sorted(drivers, key=lambda d: d.get(sort) or d["name"], reverse=reverse)
+        drivers = sorted(
+            drivers, key=lambda d: d.get(sort) or d["name"], reverse=reverse
+        )
         return {"items": drivers, "page": payload.get("page", 1), "total": len(drivers)}
 
     def _handle_request_ride(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -276,14 +384,18 @@ class MockServerAPI(ServerAPI):
 
     def _handle_ride_status(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
-        ride = next((r for r in self.db.rides if r["id"] == payload["request_id"]), None)
+        ride = next(
+            (r for r in self.db.rides if r["id"] == payload["request_id"]), None
+        )
         if not ride:
             raise ServerAPIError("Ride not found")
         return ride
 
     def _handle_cancel_ride(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
-        ride = next((r for r in self.db.rides if r["id"] == payload["request_id"]), None)
+        ride = next(
+            (r for r in self.db.rides if r["id"] == payload["request_id"]), None
+        )
         if not ride:
             raise ServerAPIError("Ride not found")
         ride["status"] = "cancelled"
@@ -299,7 +411,9 @@ class MockServerAPI(ServerAPI):
 
     def _handle_chat_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
-        chat = next((c for c in self.db.chats if c["chat_id"] == payload["chat_id"]), None)
+        chat = next(
+            (c for c in self.db.chats if c["chat_id"] == payload["chat_id"]), None
+        )
         if not chat:
             raise ServerAPIError("Chat not found")
         chat["messages"].append({"sender": "me", "body": payload["body"]})
@@ -309,3 +423,54 @@ class MockServerAPI(ServerAPI):
         self._require_login()
         self._user.update(payload.get("profile", {}))
         return self._user
+
+
+class AuthBackendServerAPI(MockServerAPI):
+    """
+    Hybrid API: forwards register/login to the real backend while keeping
+    the rest of the GUI backed by the in-memory mock dataset.
+    """
+
+    def __init__(
+        self, host: str = "127.0.0.1", port: int = 5000, timeout: float = 8.0
+    ) -> None:
+        super().__init__()
+        self._backend = ServerAPI(host=host, port=port, timeout=timeout)
+
+    def register_user(
+        self,
+        *,
+        name: str,
+        email: str,
+        username: str,
+        password: str,
+        role: str | bool,
+        area: str,
+    ) -> Dict[str, Any]:
+        response = self._backend.register_user(
+            name=name,
+            email=email,
+            username=username,
+            password=password,
+            role=role,
+            area=area,
+        )
+        # Mirror last submitted profile so other mock views stay coherent.
+        cleaned_username = username.strip()
+        self._user.update(
+            {
+                "name": name.strip() or cleaned_username,
+                "username": cleaned_username,
+                "email": email.strip(),
+                "area": area.strip(),
+                "role": role,
+            }
+        )
+        self._logged_in = False
+        return response
+
+    def login(self, *, username: str, password: str) -> Dict[str, Any]:
+        user = self._backend.login(username=username, password=password)
+        self._user.update(user)
+        self._logged_in = True
+        return user

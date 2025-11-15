@@ -40,7 +40,7 @@ def dispatch_request(
         case client_request_type.LOGIN_USER:
             return handle_login(request_payload, client_address)
         case client_request_type.UPDATE_PROFILE:
-            return hand
+            return handle_update_profile(request.payload)
     return make_server_error_response(f"Unsupported request type: {request.type!r}")
 
 

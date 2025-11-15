@@ -1260,11 +1260,10 @@ class MainWindow(QMainWindow):
 
 # Entrypoint -------------------------------------------------------------------
 
-def run() -> None:
+def run(api: Optional[ServerAPI] = None, theme: str = "bolt_light") -> None:
     app = QApplication(sys.argv)
-    default_theme = "bolt_light"
-    app.setStyleSheet(build_stylesheet(default_theme))
-    window = MainWindow(theme=default_theme)
+    app.setStyleSheet(build_stylesheet(theme))
+    window = MainWindow(api=api, theme=theme)
     window.show()
     sys.exit(app.exec())
 
