@@ -148,7 +148,9 @@ def handle_update_profile(
         "password": update_password(
             user_id=payload["user_id"], new_password=payload["password"]
         ),
-        "schedule": update_user_schedule(user_id=payload["user_id"],days=payload["schedule"])
+        "schedule": update_user_schedule(
+            user_id=payload["user_id"], days=payload["schedule"]
+        ),
     }
     db_responses = []
     fields = [field for field in payload if field in allowed_fields]
