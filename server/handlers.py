@@ -1,5 +1,6 @@
 from typing import Any, Dict, Tuple
 
+from DB.matching import compute_driver_to_rider_info
 from DB.protocol_db_server import db_msg_status
 from server_client_protocol import (
     ServerResponse,
@@ -124,4 +125,21 @@ def handle_login(
     return _ok_server(
         {"user_id": user_id, "session_token": session_token},
         resp_type=server_response_type.USER_LOGGED_IN,
+    )
+
+
+def handle_driver_accepts_ride(driver_id: int, ride) -> ServerResponse:
+    info = compute_driver_to_rider_info(driver_id, ride.rider_id)
+
+    payload = {
+        "ride_id": ride.id,
+        "driver_id": driver_id,
+        "rider_id": ride.rider_id,
+        **info,
+    }
+
+    return ServerResponse(
+        type=server_response_type.RIDE_UPDATED,
+        status=msg_status.OK,
+        payload=payload,
     )

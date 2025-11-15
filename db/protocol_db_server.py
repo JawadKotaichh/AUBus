@@ -41,6 +41,7 @@ class db_response_type(enum.IntEnum):
     USER_AUTHENTICATED = 11
     RIDES_FOUND = 12
     RATING_UPDATED = 13
+    USER_FOUND = 14
 
 
 class db_msg_status(enum.IntEnum):

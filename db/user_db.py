@@ -1,24 +1,82 @@
 from __future__ import annotations
 import base64
+from datetime import datetime
 import hashlib
 import hmac
 import os
-from typing import Any, Dict, Tuple, Mapping
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from db_connection import DB_CONNECTION
 from DB.protocol_db_server import DBResponse, db_response_type, db_msg_status
 from schedules import (
+    DAY_TO_COLS,
     ScheduleDay,
     update_schedule as update_schedule_entry,
     init_schema_schedule,
 )
 from ride import init_ride_schema
 from user_sessions import init_user_sessions_schema
+from maps_service import geocode_address
+from DB.zones import ZONE_BOUNDARIES, ZoneBoundary, get_zone_by_name
 
 
 def _payload_from_status(status: db_msg_status, content: Any) -> Dict[str, Any]:
     if status == db_msg_status.OK:
         return {"output": content, "error": None}
     return {"output": None, "error": content}
+
+
+_ONLINE_HEARTBEAT_WINDOW_SECONDS = 5 * 60  # 5 minutes
+
+
+def _ensure_datetime(value: datetime | str | None) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return datetime.utcnow()
+        try:
+            # Supports both "YYYY-MM-DDTHH:MM:SS" and "YYYY-MM-DD HH:MM:SS" variants.
+            return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(cleaned, fmt)
+            except ValueError:
+                continue
+        raise ValueError(f"Invalid datetime value: {value!r}")
+    return datetime.utcnow()
+
+
+def _parse_sqlite_timestamp(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+
+
+def _time_is_within_window(
+    request_dt: datetime, dep_raw: Optional[str], ret_raw: Optional[str]
+) -> bool:
+    dep_dt = _parse_sqlite_timestamp(dep_raw)
+    ret_dt = _parse_sqlite_timestamp(ret_raw)
+    if dep_dt is None or ret_dt is None:
+        return False
+    request_time = request_dt.time()
+    dep_time = dep_dt.time()
+    ret_time = ret_dt.time()
+    return dep_time <= request_time <= ret_time
 
 
 # ==============================
@@ -85,7 +143,9 @@ def creating_initial_db() -> DBResponse:
                 password_salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE CHECK (lower(email) LIKE '%@aub.edu.lb'),
-                area TEXT NOT NULL CHECK (length(trim(area)) > 0),
+                area TEXT NOT NULL,
+                latitude REAL NOT NULL CHECK (latitude BETWEEN -90.0 AND 90.0),
+                longitude REAL NOT NULL CHECK (longitude BETWEEN -180.0 AND 180.0),
                 schedule_id INTEGER,
                 is_driver INTEGER,
                 avg_rating_driver REAL,
@@ -94,8 +154,8 @@ def creating_initial_db() -> DBResponse:
                 number_of_rides_rider INTEGER,
                 FOREIGN KEY (schedule_id) REFERENCES schedule(id)
             );
-            CREATE INDEX IF NOT EXISTS idx_users_area ON users(area);
             CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+            CREATE INDEX IF NOT EXISTS idx_users_location ON users(latitude, longitude);
             """
         )
         init_schema_schedule()
@@ -123,6 +183,8 @@ def create_user(
     area: str,
     is_driver: int,
     schedule,
+    latitude: float | None = None,
+    longitude: float | None = None,
     avg_rating_driver: float = 0.0,
     avg_rating_rider: float = 0.0,
     number_of_rides_driver: int = 0,
@@ -140,6 +202,23 @@ def create_user(
                     "Area is required for every user.",
                 ),
             )
+
+        # Ensure we have latitude/longitude
+        if latitude is None or longitude is None:
+            try:
+                lat, lng, _formatted = geocode_address(cleaned_area)
+                latitude = lat
+                longitude = lng
+            except Exception as geocode_err:
+                return DBResponse(
+                    db_response_type.ERROR,
+                    db_msg_status.INVALID_INPUT,
+                    _payload_from_status(
+                        db_msg_status.INVALID_INPUT,
+                        f"Could not geocode area '{cleaned_area}': {geocode_err}",
+                    ),
+                )
+
         conn = DB_CONNECTION
         ph = password_hashing()
         salt, hash_ = ph.hash_password(password)
@@ -148,10 +227,21 @@ def create_user(
         cur.execute(
             """
             INSERT INTO users (
-                name, username, password_salt, password_hash, email, area,
-                schedule_id, is_driver, avg_rating_driver, avg_rating_rider, 
-                number_of_rides_driver, number_of_rides_rider
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                name,
+                username,
+                password_salt,
+                password_hash,
+                email,
+                area,
+                latitude,
+                longitude,
+                schedule_id,
+                is_driver,
+                avg_rating_driver,
+                avg_rating_rider,
+                number_of_rides_driver,
+                number_of_rides_rider
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -160,6 +250,8 @@ def create_user(
                 hash_,
                 email,
                 cleaned_area,
+                float(latitude),
+                float(longitude),
                 schedule,
                 is_driver,
                 avg_rating_driver,
@@ -467,7 +559,7 @@ def get_rides_driver(user_id: int) -> DBResponse:
         rides = cur.fetchall()
         if rides:
             return DBResponse(
-                db_response_type.RIDE_CREATED,
+                db_response_type.RIDES_FOUND,
                 db_msg_status.OK,
                 _payload_from_status(db_msg_status.OK, str(rides)),
             )
@@ -492,7 +584,7 @@ def get_rides_rider(user_id: int) -> DBResponse:
         rides = cur.fetchall()
         if rides:
             return DBResponse(
-                db_response_type.RIDE_CREATED,
+                db_response_type.RIDES_FOUND,
                 db_msg_status.OK,
                 _payload_from_status(db_msg_status.OK, str(rides)),
             )
@@ -507,3 +599,184 @@ def get_rides_rider(user_id: int) -> DBResponse:
             db_msg_status.INVALID_INPUT,
             _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
         )
+
+
+def get_user_location(user_id: int) -> DBResponse:
+    """Return user's (area, latitude, longitude)."""
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT area, latitude, longitude FROM users WHERE id=?""",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.NOT_FOUND,
+                _payload_from_status(db_msg_status.NOT_FOUND, "User not found."),
+            )
+        area, lat, lng = row
+        return DBResponse(
+            db_response_type.USER_FOUND,
+            db_msg_status.OK,
+            _payload_from_status(
+                db_msg_status.OK,
+                {"area": area, "latitude": lat, "longitude": lng},
+            ),
+        )
+    except Exception as e:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
+        )
+
+
+def fetch_online_drivers(
+    *,
+    min_avg_rating: Optional[float] = None,
+    zone: Optional[str] = None,
+    requested_at: datetime | str | None = None,
+    limit: int = 10,
+    candidate_multiplier: int = 3,
+) -> DBResponse:
+    """Return drivers that are online and available for the requested moment."""
+    if limit <= 0:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, "limit must be > 0"),
+        )
+    try:
+        request_dt = _ensure_datetime(requested_at)
+    except ValueError as exc:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
+        )
+
+    zone_boundary: Optional[ZoneBoundary] = None
+    if zone:
+        zone_boundary = get_zone_by_name(zone)
+        if zone_boundary is None:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(
+                    db_msg_status.INVALID_INPUT,
+                    "Unknown zone '{}'. Supported zones: {}".format(
+                        zone, ", ".join(sorted(z.name for z in ZONE_BOUNDARIES.values()))
+                    ),
+                ),
+            )
+
+    day_key = request_dt.strftime("%A").lower()
+    if day_key not in DAY_TO_COLS:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(
+                db_msg_status.INVALID_INPUT, f"Unsupported day name: {day_key}"
+            ),
+        )
+    dep_col, ret_col = DAY_TO_COLS[day_key]
+    sql = f"""
+        SELECT
+            u.id,
+            u.name,
+            u.username,
+            u.area,
+            u.latitude,
+            u.longitude,
+            u.avg_rating_driver,
+            u.avg_rating_rider,
+            u.number_of_rides_driver,
+            us.last_seen AS last_seen,
+            s.{dep_col} AS dep_time,
+            s.{ret_col} AS ret_time
+        FROM users AS u
+        INNER JOIN user_sessions AS us ON us.user_id = u.id
+        LEFT JOIN schedule AS s ON s.id = u.schedule_id
+        WHERE
+            u.is_driver = 1
+            AND (strftime('%s','now') - strftime('%s', IFNULL(us.last_seen, CURRENT_TIMESTAMP))) <= ?
+    """
+    params: List[Any] = [_ONLINE_HEARTBEAT_WINDOW_SECONDS]
+
+    if min_avg_rating is not None:
+        if min_avg_rating < 0:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(
+                    db_msg_status.INVALID_INPUT,
+                    f"min_avg_rating must be >= 0, got {min_avg_rating}",
+                ),
+            )
+        sql += " AND u.avg_rating_driver >= ?"
+        params.append(float(min_avg_rating))
+
+    if zone_boundary:
+        sql += " AND u.latitude BETWEEN ? AND ?"
+        sql += " AND u.longitude BETWEEN ? AND ?"
+        params.extend(
+            [
+                zone_boundary.latitude_min,
+                zone_boundary.latitude_max,
+                zone_boundary.longitude_min,
+                zone_boundary.longitude_max,
+            ]
+        )
+
+    candidate_limit = max(limit * candidate_multiplier, limit)
+    sql += " ORDER BY us.last_seen DESC LIMIT ?"
+    params.append(candidate_limit)
+
+    try:
+        cur = DB_CONNECTION.execute(sql, params)
+        rows = cur.fetchall()
+    except Exception as exc:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
+        )
+
+    drivers: List[Dict[str, Any]] = []
+    for row in rows:
+        dep_time = row[10]
+        ret_time = row[11]
+        if not _time_is_within_window(request_dt, dep_time, ret_time):
+            continue
+        drivers.append(
+            {
+                "id": int(row[0]),
+                "name": row[1] or row[2],
+                "username": row[2],
+                "area": row[3],
+                "latitude": float(row[4]),
+                "longitude": float(row[5]),
+                "avg_rating_driver": float(row[6]) if row[6] is not None else 0.0,
+                "avg_rating_rider": float(row[7]) if row[7] is not None else 0.0,
+                "number_of_rides_driver": int(row[8] or 0),
+                "last_seen": row[9],
+                "schedule_window": {"start": dep_time, "end": ret_time},
+            }
+        )
+        if len(drivers) >= limit:
+            break
+
+    return DBResponse(
+        db_response_type.USER_FOUND,
+        db_msg_status.OK,
+        _payload_from_status(
+            db_msg_status.OK,
+            {
+                "requested_at": request_dt.isoformat(),
+                "drivers": drivers,
+            },
+        ),
+    )

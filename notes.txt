@@ -3,17 +3,18 @@ TODO: DB
 Y-> we need to adjust the db get list of drivers with ratings that are online only
 Y-> Make sure that the db get driver list have filters so the rider can choose from them and give them in his request 
    in order to filter the drivers and returns the ones that matches the filters(online,available(based schedule),avg rating, zone)
-J-> Save longitude and latitude for each user
-J-> filter by zone:
-    zone baabda range latitude: 10 ->7000, long:38->324343
-    zone beirut range latitude: 3209->32973, long:203920->2323
-J-> google map api: rider_long and rider_lat and fetch db to find the drivers that are online 
-   and their schedule matches the time of the request
+
 J/Y-> Add the required request types 
 Y-> ride request: it will take the user_id and get latitude,longitude (home) and use google maps api get the nearest and online drivers
        and wait for their acceptance or rejection  (try the nearest 3,....second nearest 3 and so on) else only the ones in AUB  
        -> the driver will see the rider rating so he can decide what he needs to do 
-    
+Done:
+J-> filter by zone:
+    zone baabda range latitude: 10 ->7000, long:38->324343
+    zone beirut range latitude: 3209->32973, long:203920->2323
+J-> Save longitude and latitude for each user
+J-> google map api: rider_long and rider_lat and fetch db to find the drivers that are online 
+   and their schedule matches the time of the request
 TODO: Server
 
 -> User requests:
