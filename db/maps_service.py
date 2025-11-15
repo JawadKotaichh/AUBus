@@ -1,8 +1,8 @@
 import os
-from typing import Tuple, List, Dict,Any 
+from typing import Tuple, List, Dict, Any
 import requests
 from dotenv import load_dotenv
-from protocol_db_server import db_msg_status, db_msg_status , db_response_type, DBResponse
+from protocol_db_server import db_msg_status, db_response_type, DBResponse
 from user_db import fetch_online_drivers
 
 load_dotenv()
@@ -103,64 +103,9 @@ def build_google_maps_link(origin: str, destination: str) -> str:
     return f"{base}?api=1&origin={origin}&destination={destination}"
 
 
-
-
-
-API_KEY = GOOGLE_API_KEY
-
-
-
-def get_distance_and_duration(origin: str, destination: str):
-
-    #origin is the address of the driver
-    #destination is the address of the client
-    """
-    Compute driving distance and duration between two coordinates or addresses
-    using Google Distance Matrix API (via direct HTTP call).
-
-    Parameters
-    ----------
-    origin : str
-        Origin point (e.g. "33.8963,35.4784" or address).
-    destination : str
-        Destination point (e.g. "33.9020,35.4905" or address).
-
-    Returns
-    -------
-    tuple
-        (distance_km, duration_min, distance_text, duration_text)
-    """
-    params = {
-        "origins": origin,
-        "destinations": destination,
-        "mode": "driving",
-        "units": "metric",
-        "key": API_KEY,
-    }
-
-    try:
-        response = requests.get(DISTANCE_MATRIX_URL, params=params)
-        data = response.json()
-
-        element = data["rows"][0]["elements"][0]
-        if element.get("status") != "OK":
-            raise ValueError(f"API returned invalid element: {element}")
-
-        distance_m = element["distance"]["value"]
-        duration_s = element["duration"]["value"]
-        distance_text = element["distance"]["text"]
-        duration_text = element["duration"]["text"]
-
-        return distance_m / 1000, duration_s / 60, distance_text, duration_text
-
-    except Exception as e:
-        print(f"[Error in get_distance_and_duration]: {e}")
-        return None, None, None, None
-
-
-
-
-def get_closest_online_drivers(passenger_lat, passenger_long, passenger_zone, min_avg=0)-> DBResponse:
+def get_closest_online_drivers(
+    passenger_lat, passenger_long, passenger_zone, min_avg=0
+) -> DBResponse:
     """
     Returns up to `max_results` closest online drivers to the passenger,
     restricted to drivers in the same zone and above the given rating threshold.
@@ -168,9 +113,7 @@ def get_closest_online_drivers(passenger_lat, passenger_long, passenger_zone, mi
     try:
         #   Fetch drivers in same zone
         zone_drivers_response = fetch_online_drivers(
-            zone=passenger_zone,
-            min_avg_rating=min_avg,
-            limit=10
+            zone=passenger_zone, min_avg_rating=min_avg, limit=10
         )
 
         if zone_drivers_response.status != db_msg_status.OK:
@@ -201,22 +144,22 @@ def get_closest_online_drivers(passenger_lat, passenger_long, passenger_zone, mi
             try:
                 # Use Google Distance Matrix API
                 distance_km, duration_min, _, _ = get_distance_and_duration(
-                    f"{passenger_lat},{passenger_long}",
-                    destination
+                    f"{passenger_lat},{passenger_long}", destination
                 )
-                driver_distances.append({
-                    "driver_id": driver_id,
-                    "username": username,
-                    "distance_km": distance_km,
-                    "duration_min": duration_min,
-                })
+                driver_distances.append(
+                    {
+                        "driver_id": driver_id,
+                        "username": username,
+                        "distance_km": distance_km,
+                        "duration_min": duration_min,
+                    }
+                )
             except Exception as e:
                 print(f"[WARN] Distance calc failed for driver {driver_id}: {e}")
                 continue
 
         # Sort by distance and limit results
         driver_distances.sort(key=lambda d: d["distance_km"])
-
 
         if not driver_distances:
             return DBResponse(
