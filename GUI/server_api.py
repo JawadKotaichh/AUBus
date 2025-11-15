@@ -333,16 +333,28 @@ class MockServerAPI(ServerAPI):
 
     # Mock handlers --------------------------------------------------------------
     def _handle_login(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if payload["username"] != "guest" or payload["password"] != "guest":
+        username = (payload.get("username") or "").strip().lower()
+        password = payload.get("password") or ""
+        stored_username = (self._user.get("username") or "").strip().lower()
+        stored_password = self._user.get("password") or ""
+        if not username or not password:
+            raise ServerAPIError("Invalid credentials")
+        if username != stored_username or password != stored_password:
             raise ServerAPIError("Invalid credentials")
         self._logged_in = True
         return {**self._user, "token": "mock-token"}
 
     def _handle_register(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         # Update stored "account"; GUI will auto-login after this step.
-        self._user.update(payload)
+        normalized_payload = {
+            **payload,
+            "username": (payload.get("username") or "").strip(),
+            "email": (payload.get("email") or "").strip(),
+            "password": payload.get("password") or "",
+        }
+        self._user.update(normalized_payload)
         # Do not set _logged_in here; require an explicit login call.
-        return {"message": "Registered", "username": payload["username"]}
+        return {"message": "Registered", "username": normalized_payload["username"]}
 
     def _handle_weather(self, _: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
