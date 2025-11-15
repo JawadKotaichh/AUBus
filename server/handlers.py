@@ -10,8 +10,7 @@ from server_client_protocol import (
 from db.user_db import create_user, authenticate
 from db.user_sessions import create_session
 from utils import _ok_server, _error_server
-from db.user_db import create_user, fetch_online_drivers
-from db.user_sessions import create_session
+from db.user_db import fetch_online_drivers
 
 from db.user_db import (
     update_email,
@@ -149,7 +148,7 @@ def handle_update_profile(
         "password": update_password(
             user_id=payload["user_id"], new_password=payload["password"]
         ),
-        "schedule": update_user_schedule(user_id=payload["user_id"],payload["schedule"]),
+        "schedule": update_user_schedule(user_id=payload["user_id"],days=payload["schedule"])
     }
     db_responses = []
     fields = [field for field in payload if field in allowed_fields]
