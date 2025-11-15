@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 from db.ride import create_ride, update_ride, get_ride, RideStatus
 from db.matching import compute_driver_to_rider_info
 from db.protocol_db_server import db_msg_status
@@ -12,9 +12,11 @@ from db.user_db import (
     get_user_profile,
     get_rides_driver,
     get_rides_rider,
+    get_user_location,
 )
 from utils import _error_server, _ok_server
-from db.maps_service import get_closest_online_drivers
+from db.maps_service import get_closest_online_drivers, geocode_address
+from db.zones import zone_for_coordinates
 
 
 def handle_p2p(
@@ -441,24 +443,172 @@ def handle_list_rider_rides(payload: Dict[str, Any]) -> ServerResponse:
         resp_type=server_response_type.RIDE_UPDATED,
     )
 
-def automated_request(
-        payload: Dict[str,Any],
-): 
- 
-    '''
-    payload contains rider_session_id, rider_location(boolean: 1=>AUB 0=> home )
-    verify that session_id is active
-    get lat and long
-    use the function     get_closest_online_drivers(
-    passenger_lat, passenger_long, passenger_zone, min_avg=0
-    ) that returns a DBresponse with the payload sored array of dictionaries (by the closest time) of the format:                
-                    {
-                        "driver_id": driver_id,
-                        "username": username,
-                        "distance_km": distance_km,
-                        "duration_min": duration_min,
-                    }
-    now you can use the above functions to send request
-    '''
+
+_AUB_REFERENCE_ADDRESS = "AUB Main Gate, Beirut, Lebanon"
+_AUB_COORDINATES_CACHE: Optional[Tuple[float, float, str]] = None
 
 
+def _coerce_rider_location_flag(
+    location_value: Any,
+) -> Tuple[Optional[bool], Optional[str]]:
+    if isinstance(location_value, bool):
+        return location_value, None
+    if location_value is None:
+        return None, "rider_location is required."
+    if isinstance(location_value, (int, float)):
+        return bool(int(location_value)), None
+    if isinstance(location_value, str):
+        normalized = location_value.strip().lower()
+        if normalized in {"1", "true", "aub", "to_aub", "campus"}:
+            return True, None
+        if normalized in {"0", "false", "home", "from_aub"}:
+            return False, None
+    return None, "rider_location must be boolean-like (1/AUB or 0/home)."
+
+
+def _get_aub_coordinates() -> Tuple[float, float, str]:
+    global _AUB_COORDINATES_CACHE
+    if _AUB_COORDINATES_CACHE is None:
+        lat, lng, formatted = geocode_address(_AUB_REFERENCE_ADDRESS)
+        _AUB_COORDINATES_CACHE = (lat, lng, formatted)
+    return _AUB_COORDINATES_CACHE
+
+
+def _resolve_passenger_coordinates(
+    rider_id: int, is_at_aub: bool
+) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[str]]:
+    if is_at_aub:
+        try:
+            lat, lng, formatted = _get_aub_coordinates()
+        except Exception as exc:
+            return None, None, None, f"Unable to resolve AUB location: {exc}"
+        return formatted, float(lat), float(lng), None
+
+    location_response = get_user_location(rider_id)
+    if location_response.status != db_msg_status.OK:
+        err = (
+            location_response.payload.get("error")
+            if location_response.payload
+            else "Unable to fetch rider location."
+        )
+        return None, None, None, err
+
+    output = location_response.payload.get("output") or {}
+    lat = output.get("latitude")
+    lng = output.get("longitude")
+    area = output.get("area")
+    if lat is None or lng is None or area is None:
+        return None, None, None, "Rider profile is missing location information."
+    try:
+        return str(area), float(lat), float(lng), None
+    except (TypeError, ValueError):
+        return None, None, None, "Invalid coordinates stored for rider."
+
+
+def _coerce_min_avg_rating(value: Any) -> Tuple[Optional[float], Optional[str]]:
+    if value is None:
+        return 0.0, None
+    try:
+        rating = float(value)
+    except (TypeError, ValueError):
+        return None, "min_avg_rating must be a non-negative number."
+    if rating < 0:
+        return None, "min_avg_rating must be >= 0."
+    return rating, None
+
+
+def automated_request(payload: Dict[str, Any]) -> ServerResponse:
+    """
+    Automatically obtain the closest eligible drivers for a rider session.
+    """
+    required_fields = ["rider_session_id", "rider_location"]
+    missing = [field for field in required_fields if field not in payload]
+    if missing:
+        return _error_server(
+            f"Missing fields in automated request payload: {', '.join(missing)}"
+        )
+
+    session_id = str(payload["rider_session_id"]).strip()
+    if not session_id:
+        return _error_server("rider_session_id cannot be empty.")
+
+    rider_location_flag, error = _coerce_rider_location_flag(
+        payload.get("rider_location")
+    )
+    if error:
+        return _error_server(error)
+    is_at_aub = bool(rider_location_flag)
+
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error"
+        )
+        return _error_server(f"Session verification failed: {err}")
+
+    rider_id = session_response.payload["output"]["user_id"]
+
+    passenger_area, passenger_lat, passenger_long, location_error = (
+        _resolve_passenger_coordinates(rider_id, is_at_aub)
+    )
+    if location_error:
+        return _error_server(location_error)
+
+    zone = zone_for_coordinates(passenger_lat, passenger_long)
+    passenger_zone = zone.name if zone else None
+
+    min_avg_input = (
+        payload["min_avg_rating"]
+        if "min_avg_rating" in payload
+        else payload.get("min_avg")
+    )
+    min_avg_rating, error = _coerce_min_avg_rating(min_avg_input)
+    if error:
+        return _error_server(error)
+    min_avg_rating = min_avg_rating or 0.0
+
+    drivers_response = get_closest_online_drivers(
+        passenger_lat=passenger_lat,
+        passenger_long=passenger_long,
+        passenger_zone=passenger_zone,
+        min_avg=min_avg_rating,
+    )
+    if drivers_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
+        err = (
+            drivers_response.payload.get("error")
+            if drivers_response.payload
+            else "Unable to contact maps service."
+        )
+        return _error_server(f"Automatic ride request failed: {err}")
+
+    drivers_payload = drivers_response.payload or {}
+    drivers = drivers_payload.get("drivers") or drivers_payload.get("output", {}).get(
+        "drivers", []
+    )
+    message = (
+        "No online drivers matched the current filters."
+        if not drivers
+        else None
+    )
+
+    response_payload = {
+        "rider_id": rider_id,
+        "session_id": session_id,
+        "min_avg_rating": min_avg_rating,
+        "rider_location": {
+            "area": passenger_area,
+            "zone": passenger_zone,
+            "latitude": passenger_lat,
+            "longitude": passenger_long,
+            "at_aub": is_at_aub,
+        },
+        "drivers": drivers,
+    }
+    if message:
+        response_payload["message"] = message
+
+    return _ok_server(
+        payload=response_payload, resp_type=server_response_type.USER_FOUND
+    )

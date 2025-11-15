@@ -11,7 +11,7 @@ from server_client_protocol import (
 )
 from json_codec import decode_client_request, encode_server_response
 from db.user_db import creating_initial_db
-from server.handlers import handle_register, handle_login
+from server.handlers import handle_register, handle_login, handle_update_profile
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 5000
@@ -39,6 +39,8 @@ def dispatch_request(
             return handle_register(request_payload, client_address)
         case client_request_type.LOGIN_USER:
             return handle_login(request_payload, client_address)
+        case client_request_type.UPDATE_PROFILE:
+            return hand
     return make_server_error_response(f"Unsupported request type: {request.type!r}")
 
 
