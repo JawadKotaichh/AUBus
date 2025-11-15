@@ -1,6 +1,6 @@
 import enum
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 # JSON-like payload alias
 JSONPayload = Dict[str, Any]
@@ -27,7 +27,7 @@ class client_request_type(enum.IntEnum):
 @dataclass(frozen=True)
 class ClientRequest:
     type: client_request_type
-    payload: Optional[JSONPayload] = None
+    payload: JSONPayload
 
 
 # ==== SERVER → CLIENT ====

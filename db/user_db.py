@@ -105,9 +105,7 @@ def creating_initial_db() -> DBResponse:
         return DBResponse(
             db_response_type.SESSION_CREATED,
             db_msg_status.OK,
-            _payload_from_status(
-                db_msg_status.OK, "User table created or verified."
-            ),
+            _payload_from_status(db_msg_status.OK, "User table created or verified."),
         )
     except Exception as e:
         return DBResponse(
@@ -134,16 +132,13 @@ def create_user(
     try:
         cleaned_area = (area or "").strip()
         if not cleaned_area:
-            return (
-                DBResponse(
-                    db_response_type.ERROR,
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(
                     db_msg_status.INVALID_INPUT,
-                    _payload_from_status(
-                        db_msg_status.INVALID_INPUT,
-                        "Area is required for every user.",
-                    ),
+                    "Area is required for every user.",
                 ),
-                None,
             )
         conn = DB_CONNECTION
         ph = password_hashing()
@@ -175,24 +170,20 @@ def create_user(
         )
         conn.commit()
         user_id = cur.lastrowid
-        return (
-            DBResponse(
-                db_response_type.USER_CREATED,
+        return DBResponse(
+            db_response_type.USER_CREATED,
+            db_msg_status.OK,
+            _payload_from_status(
                 db_msg_status.OK,
-                _payload_from_status(
-                    db_msg_status.OK, f"User created with ID {user_id}."
-                ),
+                {"user_id": user_id},
             ),
-            user_id,
         )
+
     except Exception as e:
-        return (
-            DBResponse(
-                db_response_type.ERROR,
-                db_msg_status.INVALID_INPUT,
-                _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
-            ),
-            None,
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
         )
 
 
@@ -222,16 +213,15 @@ def authenticate(username: str, password: str) -> DBResponse:
                 db_response_type.USER_AUTHENTICATED,
                 db_msg_status.OK,
                 _payload_from_status(
-                    db_msg_status.OK, f"Authenticated user ID {user_id}."
+                    db_msg_status.OK,
+                    {"user_id": user_id},
                 ),
             )
         else:
             return DBResponse(
                 db_response_type.ERROR,
                 db_msg_status.INVALID_INPUT,
-                _payload_from_status(
-                    db_msg_status.INVALID_INPUT, "Invalid password."
-                ),
+                _payload_from_status(db_msg_status.INVALID_INPUT, "Invalid password."),
             )
     except Exception as e:
         return DBResponse(
@@ -286,7 +276,9 @@ def update_email(user_id: int, new_email: str) -> DBResponse:
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
-            _payload_from_status(db_msg_status.INVALID_INPUT, "Email must contain '@'."),
+            _payload_from_status(
+                db_msg_status.INVALID_INPUT, "Email must contain '@'."
+            ),
         )
     if not is_allowed(new_email):
         return DBResponse(
@@ -303,9 +295,7 @@ def update_email(user_id: int, new_email: str) -> DBResponse:
         return DBResponse(
             db_response_type.USER_UPDATED,
             db_msg_status.OK,
-            _payload_from_status(
-                db_msg_status.OK, f"Email updated to {new_email}."
-            ),
+            _payload_from_status(db_msg_status.OK, f"Email updated to {new_email}."),
         )
     except Exception as e:
         return DBResponse(
@@ -385,9 +375,7 @@ def update_password(user_id: int, new_password: str) -> DBResponse:
         return DBResponse(
             db_response_type.USER_UPDATED,
             db_msg_status.OK,
-            _payload_from_status(
-                db_msg_status.OK, "Password updated successfully."
-            ),
+            _payload_from_status(db_msg_status.OK, "Password updated successfully."),
         )
     except Exception as e:
         return DBResponse(
@@ -424,9 +412,7 @@ def adjust_avg_driver(user_id: int, latest_rating: int) -> DBResponse:
         return DBResponse(
             db_response_type.RATING_UPDATED,
             db_msg_status.OK,
-            _payload_from_status(
-                db_msg_status.OK, "Driver rating updated."
-            ),
+            _payload_from_status(db_msg_status.OK, "Driver rating updated."),
         )
     except Exception as e:
         return DBResponse(
@@ -488,9 +474,7 @@ def get_rides_driver(user_id: int) -> DBResponse:
         return DBResponse(
             db_response_type.RIDES_FOUND,
             db_msg_status.NOT_FOUND,
-            _payload_from_status(
-                db_msg_status.NOT_FOUND, "No driver rides found."
-            ),
+            _payload_from_status(db_msg_status.NOT_FOUND, "No driver rides found."),
         )
     except Exception as e:
         return DBResponse(
@@ -515,9 +499,7 @@ def get_rides_rider(user_id: int) -> DBResponse:
         return DBResponse(
             db_response_type.RIDES_FOUND,
             db_msg_status.NOT_FOUND,
-            _payload_from_status(
-                db_msg_status.NOT_FOUND, "No rider rides found."
-            ),
+            _payload_from_status(db_msg_status.NOT_FOUND, "No rider rides found."),
         )
     except Exception as e:
         return DBResponse(

@@ -53,4 +53,4 @@ class db_msg_status(enum.IntEnum):
 class DBResponse:
     type: db_response_type
     status: db_msg_status
-    payload: Optional[JSONPayload] = None
+    payload: JSONPayload
