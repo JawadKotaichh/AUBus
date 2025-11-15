@@ -18,6 +18,7 @@ class RideStatus(str, enum.Enum):
 
 
 RIDE_STATUS_VALUES: Tuple[str, ...] = tuple(status.value for status in RideStatus)
+_AUB_MAIN_ADDRESS = "AUB Main Gate, Beirut, Lebanon"
 
 
 def _coerce_status(
@@ -43,6 +44,103 @@ def _coerce_status(
         )
 
 
+def _coerce_destination_flag(
+    destination_is_aub: Any,
+) -> Tuple[Optional[bool], Optional[DBResponse]]:
+    if isinstance(destination_is_aub, bool):
+        return destination_is_aub, None
+    if destination_is_aub is None:
+        return None, DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload("destination flag is required."),
+        )
+    if isinstance(destination_is_aub, (int, float)):
+        return bool(destination_is_aub), None
+    cleaned = str(destination_is_aub).strip().lower()
+    if cleaned in {"true", "1", "aub", "to_aub", "yes"}:
+        return True, None
+    if cleaned in {"false", "0", "home", "from_aub", "no"}:
+        return False, None
+    return None, DBResponse(
+        type=db_response_type.ERROR,
+        status=db_msg_status.INVALID_INPUT,
+        payload=_error_payload(
+            "destination flag must be boolean (True for AUB, False for home)."
+        ),
+    )
+
+
+def _coerce_rating(
+    value: Any, field_name: str
+) -> Tuple[Optional[float], Optional[DBResponse]]:
+    """Validate incoming rating values (0-5 scale)."""
+    if value is None:
+        return None, None
+    try:
+        rating_value = float(value)
+    except (TypeError, ValueError):
+        return None, DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(f"{field_name} must be a number between 0 and 5."),
+        )
+    if not 0 <= rating_value <= 5:
+        return None, DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(f"{field_name} must be between 0 and 5."),
+        )
+    return rating_value, None
+
+
+def _fetch_rider_area(rider_id: int) -> Tuple[Optional[str], Optional[DBResponse]]:
+    try:
+        rider_id_int = int(rider_id)
+    except (TypeError, ValueError):
+        return None, DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload("rider_id must be an integer."),
+        )
+    try:
+        cur = DB_CONNECTION.execute(
+            "SELECT area FROM users WHERE id = ?", (rider_id_int,)
+        )
+        row = cur.fetchone()
+    except sqlite3.Error as exc:
+        return None, DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(str(exc)),
+        )
+    if not row or row[0] is None:
+        return None, DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.NOT_FOUND,
+            payload=_error_payload(f"Rider location not found for id={rider_id}."),
+        )
+    cleaned_area = str(row[0]).strip()
+    if not cleaned_area:
+        return None, DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload("Rider area cannot be empty."),
+        )
+    return cleaned_area, None
+
+
+def _resolve_locations(
+    rider_id: int, destination_is_aub: bool
+) -> Tuple[Optional[str], Optional[str], Optional[DBResponse]]:
+    rider_area, error = _fetch_rider_area(rider_id)
+    if error:
+        return None, None, error
+    if destination_is_aub:
+        return rider_area, _AUB_MAIN_ADDRESS, None
+    return _AUB_MAIN_ADDRESS, rider_area, None
+
+
 def _row_to_ride(row: sqlite3.Row | Tuple[Any, ...]) -> Dict[str, Any]:
     keys = (
         "id",
@@ -53,8 +151,6 @@ def _row_to_ride(row: sqlite3.Row | Tuple[Any, ...]) -> Dict[str, Any]:
         "pickup_area",
         "destination",
         "requested_time",
-        "accepted_at",
-        "completed_at",
         "status",
         "comment",
     )
@@ -88,8 +184,6 @@ def init_ride_schema() -> None:
             pickup_area TEXT NOT NULL,
             destination TEXT NOT NULL,
             requested_time TEXT NOT NULL,
-            accepted_at TEXT,
-            completed_at TEXT,
             status TEXT NOT NULL CHECK(status IN ('PENDING','COMPLETE','CANCELED')),
             comment TEXT NOT NULL DEFAULT '',
             FOREIGN KEY(rider_id) REFERENCES users(id),
@@ -118,41 +212,17 @@ def init_ride_schema() -> None:
 def create_ride(
     *,
     rider_id: int,
-    rider_session_id: Optional[str],
-    driver_session_id: Optional[str],
-    driver_id: Optional[int] = None,
-    pickup_area: str,
-    destination: str,
+    rider_session_id: str,
+    driver_session_id: str,
+    driver_id: int,
+    destination_is_aub: bool,
     requested_time: str,
-    accepted_at: Optional[str] = None,
-    completed_at: Optional[str] = None,
-    status: RideStatus | str = RideStatus.PENDING,
-    comment: Optional[str] = "",
 ) -> DBResponse:
-    ride_status, error = _coerce_status(status)
+    ride_status = RideStatus.PENDING
+    destination_flag, error = _coerce_destination_flag(destination_is_aub)
     if error:
         return error
-    if ride_status is None:
-        return DBResponse(
-            type=db_response_type.ERROR,
-            status=db_msg_status.INVALID_INPUT,
-            payload=_error_payload("Ride status cannot be empty."),
-        )
-    pickup_area_clean = (pickup_area or "").strip()
-    destination_clean = (destination or "").strip()
     requested_time_clean = (requested_time or "").strip()
-    if not pickup_area_clean:
-        return DBResponse(
-            type=db_response_type.ERROR,
-            status=db_msg_status.INVALID_INPUT,
-            payload=_error_payload("pickup_area cannot be empty."),
-        )
-    if not destination_clean:
-        return DBResponse(
-            type=db_response_type.ERROR,
-            status=db_msg_status.INVALID_INPUT,
-            payload=_error_payload("destination cannot be empty."),
-        )
     if not requested_time_clean:
         return DBResponse(
             type=db_response_type.ERROR,
@@ -165,6 +235,29 @@ def create_ride(
             status=db_msg_status.INVALID_INPUT,
             payload=_error_payload("rider_id is required."),
         )
+    try:
+        rider_id_value = int(rider_id)
+    except (TypeError, ValueError):
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload("rider_id must be an integer."),
+        )
+    driver_id_value: Optional[int] = None
+    if driver_id is not None:
+        try:
+            driver_id_value = int(driver_id)
+        except (TypeError, ValueError):
+            return DBResponse(
+                type=db_response_type.ERROR,
+                status=db_msg_status.INVALID_INPUT,
+                payload=_error_payload("driver_id must be an integer."),
+            )
+    pickup_area, destination, error = _resolve_locations(
+        rider_id_value, bool(destination_flag)
+    )
+    if error:
+        return error
 
     try:
         cur = DB_CONNECTION.execute(
@@ -177,25 +270,19 @@ def create_ride(
                 pickup_area,
                 destination,
                 requested_time,
-                accepted_at,
-                completed_at,
-                status,
-                comment
+                status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                rider_id,
-                driver_id,
+                rider_id_value,
+                driver_id_value,
                 rider_session_id,
                 driver_session_id,
-                pickup_area_clean,
-                destination_clean,
+                pickup_area,
+                destination,
                 requested_time_clean,
-                accepted_at,
-                completed_at,
                 ride_status.value,
-                (comment or "").strip(),
             ),
         )
         DB_CONNECTION.commit()
@@ -230,8 +317,6 @@ def get_ride(ride_id: int) -> DBResponse:
                 pickup_area,
                 destination,
                 requested_time,
-                accepted_at,
-                completed_at,
                 status,
                 comment
             FROM rides
@@ -260,7 +345,6 @@ def get_ride(ride_id: int) -> DBResponse:
 
 
 def list_rides(
-    *,
     rider_session_id: Optional[str] = None,
     driver_session_id: Optional[str] = None,
     rider_id: Optional[int] = None,
@@ -304,8 +388,6 @@ def list_rides(
             pickup_area,
             destination,
             requested_time,
-            accepted_at,
-            completed_at,
             status,
             comment
         FROM rides
@@ -336,107 +418,137 @@ def list_rides(
 
 
 def update_ride(
-    ride_id: int,
+    ride_id: str,
     *,
-    status: RideStatus | str | None = None,
-    comment: Optional[str] = None,
-    driver_id: Optional[int] = None,
-    rider_session_id: Optional[str] = None,
-    driver_session_id: Optional[str] = None,
-    pickup_area: Optional[str] = None,
-    destination: Optional[str] = None,
-    requested_time: Optional[str] = None,
-    accepted_at: Optional[str] = None,
-    completed_at: Optional[str] = None,
+    status: RideStatus | str,
+    comment: str,
+    rider_rating: float | int | str | None = None,
+    driver_rating: float | int | str | None = None,
 ) -> DBResponse:
-    updates: List[str] = []
-    params: List[Any] = []
-
-    if status is not None:
-        status_value, error = _coerce_status(status)
-        if error:
-            return error
-        if status_value is None:
-            return DBResponse(
-                type=db_response_type.ERROR,
-                status=db_msg_status.INVALID_INPUT,
-                payload=_error_payload("Ride status cannot be empty."),
-            )
-        updates.append("status = ?")
-        params.append(status_value.value)
-
-    if comment is not None:
-        updates.append("comment = ?")
-        params.append(comment.strip())
-    if driver_id is not None:
-        updates.append("driver_id = ?")
-        params.append(driver_id)
-    if rider_session_id is not None:
-        updates.append("rider_session_id = ?")
-        params.append(rider_session_id)
-    if driver_session_id is not None:
-        updates.append("driver_session_id = ?")
-        params.append(driver_session_id)
-    if pickup_area is not None:
-        clean_area = pickup_area.strip()
-        if not clean_area:
-            return DBResponse(
-                type=db_response_type.ERROR,
-                status=db_msg_status.INVALID_INPUT,
-                payload=_error_payload("pickup_area cannot be empty string."),
-            )
-        updates.append("pickup_area = ?")
-        params.append(clean_area)
-    if destination is not None:
-        clean_destination = destination.strip()
-        if not clean_destination:
-            return DBResponse(
-                type=db_response_type.ERROR,
-                status=db_msg_status.INVALID_INPUT,
-                payload=_error_payload("destination cannot be empty string."),
-            )
-        updates.append("destination = ?")
-        params.append(clean_destination)
-    if requested_time is not None:
-        clean_requested = requested_time.strip()
-        if not clean_requested:
-            return DBResponse(
-                type=db_response_type.ERROR,
-                status=db_msg_status.INVALID_INPUT,
-                payload=_error_payload("requested_time cannot be empty string."),
-            )
-        updates.append("requested_time = ?")
-        params.append(clean_requested)
-    if accepted_at is not None:
-        updates.append("accepted_at = ?")
-        params.append(accepted_at)
-    if completed_at is not None:
-        updates.append("completed_at = ?")
-        params.append(completed_at)
-
-    if not updates:
+    """Update ride status/comment and optionally apply rider/driver ratings."""
+    try:
+        ride_id_value = int(ride_id)
+    except (TypeError, ValueError):
         return DBResponse(
-            type=db_response_type.TYPE_CHECK,
+            type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
-            payload=_error_payload("No fields supplied to update."),
+            payload=_error_payload("ride_id must be an integer."),
         )
 
-    params.append(ride_id)
     try:
         cur = DB_CONNECTION.execute(
-            f"UPDATE rides SET {', '.join(updates)} WHERE id = ?", params
+            "SELECT id, rider_id, driver_id FROM rides WHERE id = ?",
+            (ride_id_value,),
         )
-        DB_CONNECTION.commit()
-        if cur.rowcount == 0:
+        ride_row = cur.fetchone()
+    except sqlite3.Error as exc:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(str(exc)),
+        )
+    if ride_row is None:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.NOT_FOUND,
+            payload=_error_payload(f"Ride not found: {ride_id_value}"),
+        )
+
+    _, ride_rider_id_raw, ride_driver_id_raw = ride_row
+    try:
+        ride_rider_id = (
+            int(ride_rider_id_raw) if ride_rider_id_raw is not None else None
+        )
+    except (TypeError, ValueError):
+        ride_rider_id = None
+    try:
+        ride_driver_id = (
+            int(ride_driver_id_raw) if ride_driver_id_raw is not None else None
+        )
+    except (TypeError, ValueError):
+        ride_driver_id = None
+
+    status_value, error = _coerce_status(status)
+    if error:
+        return error
+    if status_value is None:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload("Ride status cannot be empty."),
+        )
+
+    rider_rating_value, error = _coerce_rating(rider_rating, "rider_rating")
+    if error:
+        return error
+    driver_rating_value, error = _coerce_rating(driver_rating, "driver_rating")
+    if error:
+        return error
+
+    rating_updates: List[Tuple[str, int, float]] = []
+    if rider_rating_value is not None:
+        if ride_rider_id is None:
             return DBResponse(
                 type=db_response_type.ERROR,
-                status=db_msg_status.NOT_FOUND,
-                payload=_error_payload(f"Ride not found: {ride_id}"),
+                status=db_msg_status.INVALID_INPUT,
+                payload=_error_payload("Cannot record rider rating without rider_id."),
             )
+        rating_updates.append(("rider", ride_rider_id, rider_rating_value))
+    if driver_rating_value is not None:
+        if ride_driver_id is None:
+            return DBResponse(
+                type=db_response_type.ERROR,
+                status=db_msg_status.INVALID_INPUT,
+                payload=_error_payload(
+                    "Cannot record driver rating without driver_id."
+                ),
+            )
+        rating_updates.append(("driver", ride_driver_id, driver_rating_value))
+
+    clean_comment = (comment or "").strip()
+
+    try:
+        DB_CONNECTION.execute(
+            """
+            UPDATE rides
+            SET status = ?, comment = ?
+            WHERE id = ?
+            """,
+            (status_value.value, clean_comment, ride_id_value),
+        )
+        DB_CONNECTION.commit()
+
+        if rating_updates:
+            from db.user_db import adjust_avg_driver, adjust_avg_rider
+
+            for role, user_id_value, rating_value in rating_updates:
+                adjust_fn = adjust_avg_driver if role == "driver" else adjust_avg_rider
+                rating_response = adjust_fn(user_id_value, rating_value)
+                if rating_response.status != db_msg_status.OK:
+                    err_msg = (
+                        rating_response.payload.get("error")
+                        if rating_response.payload
+                        else f"Failed to update {role} rating."
+                    )
+                    return DBResponse(
+                        type=db_response_type.ERROR,
+                        status=rating_response.status,
+                        payload=_error_payload(err_msg),
+                    )
+
         return DBResponse(
             type=db_response_type.RIDE_UPDATED,
             status=db_msg_status.OK,
-            payload=_ok_payload({"message": f"Ride {ride_id} updated successfully."}),
+            payload=_ok_payload(
+                {
+                    "message": f"Ride {ride_id_value} updated successfully.",
+                    "ride_id": ride_id_value,
+                    "status": status_value.value,
+                    "comment": clean_comment,
+                    "rider_rating": rider_rating_value,
+                    "driver_rating": driver_rating_value,
+                }
+            ),
         )
     except sqlite3.Error as exc:
         return DBResponse(

@@ -9,6 +9,9 @@ from db_connection import DB_CONNECTION
 from protocol_db_server import DBResponse, db_msg_status, db_response_type
 
 
+_ACTIVE_SESSION_WINDOW_SECONDS = 5 * 60  # Align with heartbeat expectations.
+
+
 def init_user_sessions_schema() -> None:
     """Create the user_sessions table that tracks active endpoints."""
     DB_CONNECTION.executescript(
@@ -68,8 +71,8 @@ def create_session(
     *,
     user_id: int,
     session_token: Optional[str] = None,
-    ip: Optional[str],
-    port_number: Optional[int],
+    ip: str,
+    port_number: int,
 ) -> DBResponse:
     """Insert or refresh a session entry for a user, auto-generating tokens when needed."""
     token = (session_token or "").strip() or _generate_session_token()
@@ -150,6 +153,61 @@ def get_session_by_user(user_id: int) -> DBResponse:
             status=db_msg_status.INVALID_INPUT,
             payload=_error_payload(str(exc)),
         )
+
+
+def get_active_session(
+    session_id: str, *, max_idle_seconds: Optional[int] = None
+) -> DBResponse:
+    """Return the session owner and endpoint if the session is still active."""
+    token = (session_id or "").strip()
+    if not token:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload("session_id cannot be empty."),
+        )
+    idle_window = (
+        max_idle_seconds
+        if max_idle_seconds is not None and max_idle_seconds > 0
+        else _ACTIVE_SESSION_WINDOW_SECONDS
+    )
+    try:
+        cur = DB_CONNECTION.execute(
+            """
+            SELECT user_id, ip, port_number, last_seen
+            FROM user_sessions
+            WHERE session_token = ?
+              AND (strftime('%s','now') - strftime('%s', IFNULL(last_seen, CURRENT_TIMESTAMP))) <= ?
+            """,
+            (token, idle_window),
+        )
+        row = cur.fetchone()
+    except sqlite3.Error as exc:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(str(exc)),
+        )
+    if row is None:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.NOT_FOUND,
+            payload=_error_payload(
+                "Active session not found or it has expired for the provided session_id."
+            ),
+        )
+    payload = {
+        "user_id": row[0],
+        "ip": row[1],
+        "port_number": row[2],
+        "last_seen": row[3],
+        "session_token": token,
+    }
+    return DBResponse(
+        type=db_response_type.SESSION_CREATED,
+        status=db_msg_status.OK,
+        payload=_ok_payload(payload),
+    )
 
 
 def delete_session(

@@ -24,18 +24,19 @@ TODO: Server
                                                     # Always make sure that the drivers are online (required!)
                                                     so we need to know the day and time at any moment.
     Y-> ride request specific driver: from the list of drivers (the rider chooses his driver and send him request)
+    
     J-> ride request: it will take the user_id and send the request ride request(user_id,destination_location:  true(AUB) or false(Home))
-        -> the driver will see the rider rating so he can decide what he needs to do 
-        ->wait for their acceptance or rejection
-        -> After driver acceptance send a confirmation request to the rider or cancel
+        -> the driver will see the rider rating so he can decide what he needs to do (frontend)
+        -> wait for their acceptance or rejection (frontend)
+        -> After driver acceptance send a confirmation request to the rider or cancel (frontend)
         ## -> p2p chat (to the end) # last step ##
         -> arrive to destination
-        -> rating: 
-            -> driver to rider
-            -> rider to driver
-        -> comments
-        -> abort connection(between driver and rider)
-        -> save the ride in the past rides for both the rider and the driver (add ride role) with ratings
+            -> rating: (Done)
+                -> driver to rider
+                -> rider to driver
+            -> comments (Done)
+            -> abort connection(between driver and rider) (frontend)
+            -> save the ride in the past rides for both the rider and the driver (add ride role) with ratings
 
 Optional to add later on:
 -> add number of rejection (driver)

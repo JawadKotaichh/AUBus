@@ -48,7 +48,7 @@ def handle_register(
     is_driver = int(payload["is_driver"])
     schedule_id = None
 
-    db__user_creation_response, user_id = create_user(
+    db_user_creation_response = create_user(
         name=name,
         email=email,
         username=username,
@@ -57,13 +57,15 @@ def handle_register(
         is_driver=is_driver,
         schedule=schedule_id,
     )
-    if db__user_creation_response.status != db_msg_status.OK:
+
+    if db_user_creation_response.status != db_msg_status.OK:
         err = (
-            db__user_creation_response.payload.get("error")
-            if db__user_creation_response.payload
+            db_user_creation_response.payload.get("error")
+            if db_user_creation_response.payload
             else "Unknown DB error"
         )
         return _error_server(f"Registration failed: {err}")
+    user_id = db_user_creation_response.payload["output"]["user_id"]
     if user_id is None:
         return _error_server("User creation did not return a user_id")
     ip, port = client_address[0], client_address[1]

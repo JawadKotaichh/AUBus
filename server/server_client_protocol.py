@@ -49,6 +49,7 @@ class server_response_type(enum.IntEnum):
     RIDE_DELETED = 9
 
     TYPE_CHECK = 10
+    P2P_CONNECTION = 11
 
 
 class msg_status(enum.IntEnum):
