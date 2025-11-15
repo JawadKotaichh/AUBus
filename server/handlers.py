@@ -133,7 +133,7 @@ def handle_driver_accepts_ride(driver_id: int, ride) -> ServerResponse:
 
 
 def updating_profile (
-        payload : Dict[str: Any],
+        payload : Dict[str, Any],
 
 )->ServerResponse:
     

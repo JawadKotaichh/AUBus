@@ -14,6 +14,7 @@ from db.user_db import (
     get_rides_rider,
 )
 from utils import _error_server, _ok_server
+from db.maps_service import get_closest_online_drivers
 
 
 def handle_p2p(
@@ -439,3 +440,25 @@ def handle_list_rider_rides(payload: Dict[str, Any]) -> ServerResponse:
         payload={"rider_id": rider_id, "rides": rides_raw},
         resp_type=server_response_type.RIDE_UPDATED,
     )
+
+def automated_request(
+        payload: Dict[str,Any],
+): 
+ 
+    '''
+    payload contains rider_session_id, rider_location(boolean: 1=>AUB 0=> home )
+    verify that session_id is active
+    get lat and long
+    use the function     get_closest_online_drivers(
+    passenger_lat, passenger_long, passenger_zone, min_avg=0
+    ) that returns a DBresponse with the payload sored array of dictionaries (by the closest time) of the format:                
+                    {
+                        "driver_id": driver_id,
+                        "username": username,
+                        "distance_km": distance_km,
+                        "duration_min": duration_min,
+                    }
+    now you can use the above functions to send request
+    '''
+
+
