@@ -310,7 +310,7 @@ class MockServerAPI(ServerAPI):
         )
         self._user = {
             "username": "guest",
-            "email": "guest@aub.edu.lb",
+            "email": "guest@mail.aub.edu",
             "password": "guest",
             "area": "Hamra",
             "role": "passenger",

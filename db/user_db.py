@@ -26,6 +26,28 @@ def _payload_from_status(status: db_msg_status, content: Any) -> Dict[str, Any]:
     return {"output": None, "error": content}
 
 
+ALLOWED_EMAIL_DOMAINS: Tuple[str, ...] = ("@mail.aub.edu", "@aub.edu.lb")
+
+
+def _is_allowed_aub_email(value: str) -> bool:
+    cleaned = (value or "").strip().lower()
+    if not cleaned or "@" not in cleaned:
+        return False
+    return any(cleaned.endswith(domain) for domain in ALLOWED_EMAIL_DOMAINS)
+
+
+def _email_requirement() -> str:
+    if not ALLOWED_EMAIL_DOMAINS:
+        return "Email address is required."
+    if len(ALLOWED_EMAIL_DOMAINS) == 1:
+        return f"Email must end with {ALLOWED_EMAIL_DOMAINS[0]}"
+    prefix = ", ".join(ALLOWED_EMAIL_DOMAINS[:-1])
+    suffix = ALLOWED_EMAIL_DOMAINS[-1]
+    if prefix:
+        return f"Email must end with {prefix} or {suffix}"
+    return f"Email must end with {suffix}"
+
+
 _ONLINE_HEARTBEAT_WINDOW_SECONDS = 5 * 60  # 5 minutes
 
 
@@ -135,15 +157,20 @@ def creating_initial_db() -> DBResponse:
     try:
         db = DB_CONNECTION
         cursor = db.cursor()
+        email_constraint = " OR ".join(
+            f"lower(email) LIKE '%{domain}'" for domain in ALLOWED_EMAIL_DOMAINS
+        )
+        if not email_constraint:
+            email_constraint = "1"
         cursor.executescript(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
                 username TEXT NOT NULL UNIQUE,
                 password_salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
-                email TEXT NOT NULL UNIQUE CHECK (lower(email) LIKE '%@aub.edu.lb'),
+                email TEXT NOT NULL UNIQUE CHECK ({email_constraint}),
                 area TEXT NOT NULL,
                 latitude REAL NOT NULL CHECK (latitude BETWEEN -90.0 AND 90.0),
                 longitude REAL NOT NULL CHECK (longitude BETWEEN -180.0 AND 180.0),
@@ -193,6 +220,23 @@ def create_user(
 ):
     """Create a new user and insert into DB."""
     try:
+        cleaned_email = (email or "").strip()
+        if not cleaned_email:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(
+                    db_msg_status.INVALID_INPUT, "Email is required."
+                ),
+            )
+        if not _is_allowed_aub_email(cleaned_email):
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(
+                    db_msg_status.INVALID_INPUT, _email_requirement()
+                ),
+            )
         cleaned_area = (area or "").strip()
         if not cleaned_area:
             return DBResponse(
@@ -249,7 +293,7 @@ def create_user(
                 username,
                 salt,
                 hash_,
-                email,
+                cleaned_email,
                 cleaned_area,
                 float(latitude),
                 float(longitude),
@@ -356,16 +400,14 @@ def update_username(user_id: int, new_username: str) -> DBResponse:
 
 
 def update_email(user_id: int, new_email: str) -> DBResponse:
-    def is_allowed(email: str, domain="@aub.edu.lb") -> bool:
-        return email.lower().endswith(domain)
-
-    if not new_email.strip():
+    cleaned_email = (new_email or "").strip()
+    if not cleaned_email:
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
             _payload_from_status(db_msg_status.INVALID_INPUT, "Empty email."),
         )
-    if "@" not in new_email:
+    if "@" not in cleaned_email:
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
@@ -373,22 +415,26 @@ def update_email(user_id: int, new_email: str) -> DBResponse:
                 db_msg_status.INVALID_INPUT, "Email must contain '@'."
             ),
         )
-    if not is_allowed(new_email):
+    if not _is_allowed_aub_email(cleaned_email):
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
-            _payload_from_status(db_msg_status.INVALID_INPUT, "Not an AUB email."),
+            _payload_from_status(
+                db_msg_status.INVALID_INPUT, _email_requirement()
+            ),
         )
 
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
-        cur.execute("""UPDATE users SET email=? WHERE id=?""", (new_email, user_id))
+        cur.execute("""UPDATE users SET email=? WHERE id=?""", (cleaned_email, user_id))
         conn.commit()
         return DBResponse(
             db_response_type.USER_UPDATED,
             db_msg_status.OK,
-            _payload_from_status(db_msg_status.OK, f"Email updated to {new_email}."),
+            _payload_from_status(
+                db_msg_status.OK, f"Email updated to {cleaned_email}."
+            ),
         )
     except Exception as e:
         return DBResponse(

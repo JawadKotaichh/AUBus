@@ -122,6 +122,28 @@ THEME_PALETTES = {
 }
 
 
+ALLOWED_AUB_EMAIL_SUFFIXES = ("@mail.aub.edu", "@aub.edu.lb")
+
+
+def is_valid_aub_email(email: str) -> bool:
+    cleaned = (email or "").strip().lower()
+    if not cleaned or "@" not in cleaned:
+        return False
+    return any(cleaned.endswith(domain) for domain in ALLOWED_AUB_EMAIL_SUFFIXES)
+
+
+def aub_email_requirement() -> str:
+    if not ALLOWED_AUB_EMAIL_SUFFIXES:
+        return "Email cannot be empty."
+    if len(ALLOWED_AUB_EMAIL_SUFFIXES) == 1:
+        return f"Email must end with {ALLOWED_AUB_EMAIL_SUFFIXES[0]}"
+    prefix = ", ".join(ALLOWED_AUB_EMAIL_SUFFIXES[:-1])
+    suffix = ALLOWED_AUB_EMAIL_SUFFIXES[-1]
+    if prefix:
+        return f"Email must end with {prefix} or {suffix}"
+    return f"Email must end with {suffix}"
+
+
 def build_stylesheet(mode: str) -> str:
     colors = THEME_PALETTES.get(mode, THEME_PALETTES["bolt_light"])
     return f"""
@@ -303,6 +325,8 @@ class AuthPage(QWidget):
 
         self.reg_name = QLineEdit()
         self.reg_email = QLineEdit()
+        self.reg_email.setPlaceholderText("netid@mail.aub.edu")
+        self.reg_email.setToolTip(aub_email_requirement())
         self.reg_username = QLineEdit()
         self.reg_password = QLineEdit()
         self.reg_password.setEchoMode(QLineEdit.EchoMode.Password)
@@ -339,10 +363,15 @@ class AuthPage(QWidget):
         self.authenticated.emit(user)
 
     def _handle_register(self) -> None:
+        email = self.reg_email.text().strip()
+        if not is_valid_aub_email(email):
+            self.reg_status.setText(aub_email_requirement())
+            self.reg_status.setStyleSheet("color: red;")
+            return
         try:
             _ = self.api.register_user(
                 name=self.reg_name.text().strip(),
-                email=self.reg_email.text().strip(),
+                email=email,
                 username=self.reg_username.text().strip(),
                 password=self.reg_password.text().strip(),
                 role=self.reg_role.currentText(),
@@ -1081,6 +1110,8 @@ class ProfilePage(QWidget):
 
         self.username_input = QLineEdit()
         self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText("firstname.lastname@mail.aub.edu")
+        self.email_input.setToolTip(aub_email_requirement())
         self.area_input = QLineEdit()
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -1119,9 +1150,14 @@ class ProfilePage(QWidget):
         self.notifications_combo.setCurrentText("enabled" if user.get("notifications", True) else "disabled")
 
     def _save(self) -> None:
+        email = self.email_input.text().strip()
+        if not is_valid_aub_email(email):
+            self.status_label.setText(aub_email_requirement())
+            self.status_label.setStyleSheet("color: red;")
+            return
         profile_data = {
             "username": self.username_input.text().strip(),
-            "email": self.email_input.text().strip(),
+            "email": email,
             "area": self.area_input.text().strip(),
             "password": self.password_input.text().strip(),
             "role": self.role_combo.currentText(),
