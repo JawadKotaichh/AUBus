@@ -24,7 +24,7 @@ TODO: Server
                                                     # Always make sure that the drivers are online (required!)
                                                     so we need to know the day and time at any moment
 
-    -> ride request specific driver from the list of drivers (the rider chooses his driver and send him request)
+    -> ride request specific driver: from the list of drivers (the rider chooses his driver and send him request)
     -> ride request: it will take the user_id and send the request ride request(user_id,destination_location:  true(AUB) or false(Home))
         -> the driver will see the rider rating so he can decide what he needs to do 
         ->wait for their acceptance or rejection

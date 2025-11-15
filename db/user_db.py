@@ -640,11 +640,11 @@ def fetch_online_drivers(
     min_avg_rating: Optional[float] = None,
     zone: Optional[str] = None,
     requested_at: datetime | str | None = None,
-    limit: int = 10,
-    candidate_multiplier: int = 3,
+    limit: Optional[int] = None,
+    candidate_multiplier: Optional[int] = None,
 ) -> DBResponse:
     """Return drivers that are online and available for the requested moment."""
-    if limit <= 0:
+    if limit is not None and limit <= 0:
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
@@ -733,9 +733,13 @@ def fetch_online_drivers(
             ]
         )
 
-    candidate_limit = max(limit * candidate_multiplier, limit)
-    sql += " ORDER BY us.last_seen DESC LIMIT ?"
-    params.append(candidate_limit)
+    sql += " ORDER BY us.last_seen DESC"
+    candidate_limit: Optional[int] = None
+    if limit is not None:
+        multiplier = candidate_multiplier if candidate_multiplier and candidate_multiplier > 0 else 1
+        candidate_limit = max(limit * multiplier, limit)
+        sql += " LIMIT ?"
+        params.append(candidate_limit)
 
     try:
         cur = DB_CONNECTION.execute(sql, params)
@@ -768,7 +772,7 @@ def fetch_online_drivers(
                 "schedule_window": {"start": dep_time, "end": ret_time},
             }
         )
-        if len(drivers) >= limit:
+        if limit is not None and len(drivers) >= limit:
             break
 
     return DBResponse(

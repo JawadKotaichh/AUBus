@@ -1,14 +1,14 @@
 from typing import Any, Dict, Tuple
 
-from DB.matching import compute_driver_to_rider_info
-from DB.protocol_db_server import db_msg_status
+from db.matching import compute_driver_to_rider_info
+from db.protocol_db_server import db_msg_status
 from server_client_protocol import (
     ServerResponse,
     server_response_type,
     msg_status,
 )
-from DB.user_db import create_user, authenticate
-from DB.user_sessions import create_session
+from db.user_db import create_user, authenticate
+from db.user_sessions import create_session
 
 
 def _ok_server(
