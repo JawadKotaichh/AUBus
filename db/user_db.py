@@ -687,7 +687,6 @@ def get_user_profile(user_id: int) -> DBResponse:
             payload=_payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
         )
 
-
 def fetch_online_drivers(
     *,
     min_avg_rating: Optional[float] = None,
@@ -695,8 +694,12 @@ def fetch_online_drivers(
     requested_at: datetime | str | None = None,
     limit: Optional[int] = None,
     candidate_multiplier: Optional[int] = None,
+    username: Optional[str] = None,
+    name: Optional[str] = None,
 ) -> DBResponse:
-    """Return drivers that are online and available for the requested moment."""
+    """Return drivers that are online and available for the requested moment.
+    Optional filters: min_avg_rating, zone, username (partial/CI), name (partial/CI).
+    """
     if limit is not None and limit <= 0:
         return DBResponse(
             db_response_type.ERROR,
@@ -773,6 +776,16 @@ def fetch_online_drivers(
             )
         sql += " AND u.avg_rating_driver >= ?"
         params.append(float(min_avg_rating))
+
+    # --- New filters: username / name (case-insensitive partial match) ---
+    if username is not None and username.strip():
+        sql += " AND LOWER(u.username) LIKE LOWER(?)"
+        params.append(f"%{username.strip()}%")
+
+    if name is not None and name.strip():
+        sql += " AND LOWER(u.name) LIKE LOWER(?)"
+        params.append(f"%{name.strip()}%")
+    # --------------------------------------------------------------------
 
     if zone_boundary:
         sql += " AND u.latitude BETWEEN ? AND ?"

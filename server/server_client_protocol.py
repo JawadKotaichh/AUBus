@@ -50,6 +50,7 @@ class server_response_type(enum.IntEnum):
 
     TYPE_CHECK = 10
     P2P_CONNECTION = 11
+    USER_FOUND=12
 
 
 class msg_status(enum.IntEnum):

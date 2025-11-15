@@ -10,6 +10,10 @@ from server_client_protocol import (
 from db.user_db import create_user, authenticate
 from db.user_sessions import create_session
 from utils import _ok_server, _error_server
+from db.user_db import create_user, fetch_online_drivers
+from db.user_sessions import create_session
+
+from db.user_db import update_email,update_password,update_username,update_user_schedule
 
 
 def handle_register(
@@ -126,3 +130,90 @@ def handle_driver_accepts_ride(driver_id: int, ride) -> ServerResponse:
         status=msg_status.OK,
         payload=payload,
     )
+
+
+def updating_profile (
+        payload : Dict[str: Any],
+
+)->ServerResponse:
+    
+    allowed_fields=['username','email','password','schedule']
+    modifications={'username': update_username(payload['username']),
+                   'email': update_email(payload['email']),
+                   'password':update_password(payload['password']),
+                   'schedule':update_user_schedule(payload['schedule'])}
+    db_responses=[]
+    fields=[field for field in payload if field in allowed_fields ]
+    if not fields:
+            return _error_server(
+                "No fields to update in update payload"
+            )
+
+    for field in fields:
+        db_responses.append((modifications[field]))
+    for response in db_responses:
+        if response.status!=db_msg_status.OK:
+            err = (
+            response.payload.get("error")
+            if response.payload
+            else "Unknown DB error"
+            
+        )
+            return _error_server(f"Update failed: {err}")
+    return _ok_server(
+        payload={field : payload[field] for field in fields },
+        resp_type=server_response_type.USER_REGISTERED)
+
+    
+
+
+def get_drivers_with_filters(payload: Dict[str, Any]) -> ServerResponse:
+    """
+    Process a client request to fetch online drivers based on optional filters.
+    Accepts min_avg_rating, area, and requested_at in the payload.
+    """
+    try:
+        
+        filters = ["min_avg_rating", "zone", "requested_at", "limit", "candidate_multiplier"]
+        parameters = {f: payload.get(f, None) for f in filters}
+
+        
+        response = fetch_online_drivers(
+            min_avg_rating=parameters.get("min_avg_rating"),
+            zone=parameters.get("zone"),
+            requested_at=parameters.get("requested_at"),
+            limit=parameters.get("limit"),
+            candidate_multiplier=parameters.get("candidate_multiplier"),
+        )
+
+        
+        if response.status != db_msg_status.OK:
+            err = (
+                response.payload.get("error")
+                if response.payload
+                else "Unknown database error"
+            )
+            return _error_server(f"Fetching drivers failed: {err}")
+
+       
+        drivers_info = response.payload.get("drivers", [])
+        if not drivers_info:
+            return _ok_server(
+                payload={"drivers": [], "message": "No online drivers found matching filters."},
+                resp_type=server_response_type.USER_FOUND,
+            )
+
+        
+        return _ok_server(
+            payload={
+                "filters_used": {f: parameters.get(f) for f in filters if parameters.get(f) is not None},
+                "count": len(drivers_info),
+                "drivers": drivers_info,
+            },
+            resp_type=server_response_type.USER_FOUND,
+        )
+
+    except Exception as e:
+        # Step 6️⃣ — Catch unexpected runtime errors
+        return _error_server(f"Internal server error while fetching drivers: {str(e)}")
+
