@@ -1,18 +1,9 @@
 TODO: DB
-
-
-Y-> Make sure that the db get driver list have filters so the rider can choose from them and give them in his request 
-   in order to filter the drivers and returns the ones that matches the filters(online,available(based schedule),avg rating, zone)
-
-J/Y-> Add the required request types 
-
 Done:
 
 Y-> ride request: it will take the user_id and get latitude,longitude (home) and use google maps api get the nearest and online drivers
 Y-> Make sure that the db get driver list have filters so the rider can choose from them and give them in his request 
    in order to filter the drivers and returns the ones that matches the filters(online,available(based schedule),avg rating, zone)
-
-
 Y-> we need to adjust the db get list of drivers with ratings that are online only
 J-> filter by zone:
     zone baabda range latitude: 10 ->7000, long:38->324343
@@ -20,11 +11,13 @@ J-> filter by zone:
 J-> Save longitude and latitude for each user
 J-> google map api: rider_long and rider_lat and fetch db to find the drivers that are online 
    and their schedule matches the time of the request
+Y-> Make sure that the db get driver list have filters so the rider can choose from them and give them in his request 
+   in order to filter the drivers and returns the ones that matches the filters(online,available(based schedule),avg rating, zone)
+J/Y-> Add the required request types 
+
 TODO: Server
 
--> User requests:
-
-    
+-> User requests:    
     -> update profile (updated things in json) ex: payload= {"name" : jawad,"is_driver":true}
     -> get list of drivers with filters ex: payload={"min_avg_rider_rating":2,"zone":choose one of the zones available,
                                                     "schedule":available at specific time,"name":xxxxx} 
@@ -44,7 +37,6 @@ TODO: Server
         -> comments
         -> abort connection(between driver and rider)
         -> save the ride in the past rides for both the rider and the driver (add ride role) with ratings
-    ->
 
 Optional to add later on:
 -> add number of rejection (driver)

@@ -238,13 +238,9 @@ def touch_session(session_token: str) -> DBResponse:
 
 
 def get_online_users():
-    conn=DB_CONNECTION
-    cur=conn.cursor()
-
-    cur.execute('''
-                SELECT user_id FROM user_sessions''')
-    
-
-    return [row[0] for row in cur.fetchall()] #THIS WILL RETURN A LIST OF IDS FOR ALL ONLINE USER, WE CAN USE IN ALL FILTERING QUERIES
-
-
+    conn = DB_CONNECTION
+    cur = conn.cursor()
+    cur.execute("""SELECT user_id FROM user_sessions""")
+    return [
+        row[0] for row in cur.fetchall()
+    ]  # THIS WILL RETURN A LIST OF IDS FOR ALL ONLINE USER, WE CAN USE IN ALL FILTERING QUERIES

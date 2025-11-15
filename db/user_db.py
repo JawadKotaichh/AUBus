@@ -7,8 +7,7 @@ import os
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from db_connection import DB_CONNECTION
 from protocol_db_server import DBResponse, db_response_type, db_msg_status
-from user_sessions import get_online_users
-from zones import zone_for_coordinates
+
 from schedules import (
     DAY_TO_COLS,
     ScheduleDay,
@@ -670,7 +669,8 @@ def fetch_online_drivers(
                 _payload_from_status(
                     db_msg_status.INVALID_INPUT,
                     "Unknown zone '{}'. Supported zones: {}".format(
-                        zone, ", ".join(sorted(z.name for z in ZONE_BOUNDARIES.values()))
+                        zone,
+                        ", ".join(sorted(z.name for z in ZONE_BOUNDARIES.values())),
                     ),
                 ),
             )
@@ -782,146 +782,3 @@ def fetch_online_drivers(
             },
         ),
     )
-
-
-
-
-    
-    
-def get_online_driver_with_min_avg(min_avg:float=0 ):
-    try:
-        online_ids=get_online_users()
-        conn=DB_CONNECTION
-        cur=conn.cursor()
-        if online_ids:
-            placeholders = ','.join(['?'] * len(online_ids))
-            query = f"""
-                SELECT user_id, username
-                FROM users
-                WHERE user_id IN ({placeholders})
-                AND is_driver = 1
-                AND avg_rating_driver > ?
-            """
-            cur.execute(query, online_ids+[min_avg])
-            results = cur.fetchall()
-            if results:
-                return DBResponse(
-                    type=db_response_type.DRIVERS_FOUND,
-                    status=db_msg_status.OK,
-                    payload={"drivers": results}
-                )
-            else:   
-                return DBResponse(
-                    type=db_response_type.DRIVERS_FOUND,
-                    status=db_msg_status.NOT_FOUND,
-                    payload={"drivers": []}
-                )
-
-        else:
-                return DBResponse(
-                    type=db_response_type.DRIVERS_FOUND,
-                    status=db_msg_status.NOT_FOUND,
-                    payload={"drivers": []}
-                )
-
-    except Exception as e:
-            return DBResponse(
-                type=db_response_type.ERROR,
-                status=db_msg_status.INVALID_INPUT,
-                payload={"error": str(e)}
-            )
-    
-def get_online_driver_within_zone(
-    passenger_lat: float,
-    passenger_long: float,
-    min_avg: float = 0
-) -> DBResponse:
-    """
-    Return all online drivers within the same zone as the passenger
-    and above a given average rating threshold.
-    """
-    try:
-        zone = zone_for_coordinates(passenger_lat, passenger_long)
-
-        #  No zone found
-        if not zone:
-            return DBResponse(
-                type=db_response_type.ERROR,
-                status=db_msg_status.NOT_FOUND,
-                payload={"error": "Passenger location not in a known zone."}
-            )
-
-        #  Get online drivers that satisfy the min_avg rating
-        drivers_resp = get_online_driver_with_min_avg(min_avg)
-        if drivers_resp.status != db_msg_status.OK:
-            return DBResponse(
-                type=db_response_type.DRIVERS_FOUND,
-                status=db_msg_status.NOT_FOUND,
-                payload={"drivers": []}
-            )
-
-        drivers_data = drivers_resp.payload.get("drivers", [])
-        if not drivers_data:
-            return DBResponse(
-                type=db_response_type.DRIVERS_FOUND,
-                status=db_msg_status.NOT_FOUND,
-                payload={"drivers": []}
-            )
-
-        # Extract driver IDs from the list of tuples (user_id, username, ...)
-        driver_ids = [d[0] for d in drivers_data]
-        if not driver_ids:
-            return DBResponse(
-                type=db_response_type.DRIVERS_FOUND,
-                status=db_msg_status.NOT_FOUND,
-                payload={"drivers": []}
-            )
-
-        conn = DB_CONNECTION
-        cur = conn.cursor()
-
-        placeholders = ','.join(['?'] * len(driver_ids))
-        query = f"""
-                SELECT user_id, username, lat, lng
-                FROM users
-                WHERE user_id IN ({placeholders})
-                AND lat BETWEEN ? AND ?
-                AND lng BETWEEN ? AND ?
-        """
-        params = driver_ids + [
-            zone.latitude_min, zone.latitude_max,
-            zone.longitude_min, zone.longitude_max
-        ]
-
-        cur.execute(query, params)
-        results = cur.fetchall()
-
-        cur.execute(query, params)
-        results = cur.fetchall()
-
-        # Return DBResponse
-        if results:
-            return DBResponse(
-                type=db_response_type.DRIVERS_FOUND,
-                status=db_msg_status.OK,
-                payload={"drivers": results}
-            )
-        else:
-            return DBResponse(
-                type=db_response_type.DRIVERS_FOUND,
-                status=db_msg_status.NOT_FOUND,
-                payload={"drivers": []}
-            )
-
-    except Exception as e:
-        return DBResponse(
-            type=db_response_type.ERROR,
-            status=db_msg_status.INVALID_INPUT,
-            payload={"error": str(e)}
-        )
-
-
-    
-
-
-
