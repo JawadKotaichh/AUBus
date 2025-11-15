@@ -1,14 +1,19 @@
 TODO: DB
 
-Y-> we need to adjust the db get list of drivers with ratings that are online only
+
 Y-> Make sure that the db get driver list have filters so the rider can choose from them and give them in his request 
    in order to filter the drivers and returns the ones that matches the filters(online,available(based schedule),avg rating, zone)
 
 J/Y-> Add the required request types 
-Y-> ride request: it will take the user_id and get latitude,longitude (home) and use google maps api get the nearest and online drivers
-       and wait for their acceptance or rejection  (try the nearest 3,....second nearest 3 and so on) else only the ones in AUB  
-       -> the driver will see the rider rating so he can decide what he needs to do 
+
 Done:
+
+Y-> ride request: it will take the user_id and get latitude,longitude (home) and use google maps api get the nearest and online drivers
+Y-> Make sure that the db get driver list have filters so the rider can choose from them and give them in his request 
+   in order to filter the drivers and returns the ones that matches the filters(online,available(based schedule),avg rating, zone)
+
+
+Y-> we need to adjust the db get list of drivers with ratings that are online only
 J-> filter by zone:
     zone baabda range latitude: 10 ->7000, long:38->324343
     zone beirut range latitude: 3209->32973, long:203920->2323
@@ -18,6 +23,8 @@ J-> google map api: rider_long and rider_lat and fetch db to find the drivers th
 TODO: Server
 
 -> User requests:
+
+    
     -> update profile (updated things in json) ex: payload= {"name" : jawad,"is_driver":true}
     -> get list of drivers with filters ex: payload={"min_avg_rider_rating":2,"zone":choose one of the zones available,
                                                     "schedule":available at specific time,"name":xxxxx} 
@@ -26,6 +33,8 @@ TODO: Server
 
     -> ride request specific driver from the list of drivers (the rider chooses his driver and send him request)
     -> ride request: it will take the user_id and send the request ride request(user_id,destination_location:  true(AUB) or false(Home))
+        -> the driver will see the rider rating so he can decide what he needs to do 
+        ->wait for their acceptance or rejection
         -> After driver acceptance send a confirmation request to the rider or cancel
         -> p2p chat (to the end) # last step
         -> arrive to destination

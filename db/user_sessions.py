@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any, Dict, Optional
 
 from db_connection import DB_CONNECTION
-from DB.protocol_db_server import DBResponse, db_msg_status, db_response_type
+from protocol_db_server import DBResponse, db_msg_status, db_response_type
 
 
 def init_user_sessions_schema() -> None:
