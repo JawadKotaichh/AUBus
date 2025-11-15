@@ -287,7 +287,7 @@ def create_ride(
         )
         DB_CONNECTION.commit()
         payload = {
-            "id": cur.lastrowid,
+            "session_id": cur.lastrowid,
             "status": ride_status.value,
             "message": "Ride created successfully",
         }

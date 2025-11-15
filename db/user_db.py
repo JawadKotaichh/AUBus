@@ -635,6 +635,59 @@ def get_user_location(user_id: int) -> DBResponse:
         )
 
 
+def get_user_profile(user_id: int) -> DBResponse:
+    """Return public profile details (ratings, ride counters, and role)."""
+    try:
+        cur = DB_CONNECTION.execute(
+            """
+            SELECT
+                id,
+                name,
+                username,
+                area,
+                avg_rating_driver,
+                avg_rating_rider,
+                number_of_rides_driver,
+                number_of_rides_rider,
+                is_driver
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return DBResponse(
+                type=db_response_type.ERROR,
+                status=db_msg_status.NOT_FOUND,
+                payload=_payload_from_status(
+                    db_msg_status.NOT_FOUND, f"User not found for id={user_id}."
+                ),
+            )
+        payload = {
+            "user_id": int(row[0]),
+            "name": row[1],
+            "username": row[2],
+            "area": row[3],
+            "avg_rating_driver": float(row[4]) if row[4] is not None else 0.0,
+            "avg_rating_rider": float(row[5]) if row[5] is not None else 0.0,
+            "number_of_rides_driver": int(row[6] or 0),
+            "number_of_rides_rider": int(row[7] or 0),
+            "is_driver": bool(row[8]),
+        }
+        return DBResponse(
+            type=db_response_type.USER_FOUND,
+            status=db_msg_status.OK,
+            payload=_payload_from_status(db_msg_status.OK, payload),
+        )
+    except Exception as exc:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
+        )
+
+
 def fetch_online_drivers(
     *,
     min_avg_rating: Optional[float] = None,
