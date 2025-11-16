@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime
 from typing import Tuple, List, Dict, Any, TYPE_CHECKING
 import requests
 from dotenv import load_dotenv
@@ -269,7 +270,11 @@ def build_google_maps_link(origin: str, destination: str) -> str:
 
 
 def get_closest_online_drivers(
-    passenger_lat, passenger_long, passenger_zone, min_avg=0
+    passenger_lat,
+    passenger_long,
+    passenger_zone,
+    min_avg=0,
+    requested_at: datetime | str | None = None,
 ) -> DBResponse:
     """
     Returns up to `max_results` closest online drivers to the passenger,
@@ -280,7 +285,10 @@ def get_closest_online_drivers(
         from . import user_db  # Local import avoids circular dependency
 
         zone_drivers_response = user_db.fetch_online_drivers(
-            zone=passenger_zone, min_avg_rating=min_avg, limit=10
+            zone=passenger_zone,
+            min_avg_rating=min_avg,
+            limit=10,
+            requested_at=requested_at,
         )
 
         if zone_drivers_response.status != db_msg_status.OK:

@@ -205,6 +205,7 @@ class ServerAPI:
         rider_session_id: str,
         rider_location: bool | str | int,
         min_avg_rating: Optional[float] = None,
+        pickup_time: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not rider_session_id:
             raise ServerAPIError("rider_session_id is required for automated requests.")
@@ -214,6 +215,8 @@ class ServerAPI:
         }
         if min_avg_rating is not None:
             payload["min_avg_rating"] = float(min_avg_rating)
+        if pickup_time:
+            payload["pickup_time"] = pickup_time
         return self._send_request("automated_request", payload)
 
     def fetch_trips(
@@ -600,6 +603,20 @@ class MockServerAPI(ServerAPI):
         at_aub = bool(rider_location) if isinstance(rider_location, bool) else str(
             rider_location
         ).lower() in {"1", "true", "aub", "campus", "to_aub"}
+        requested_time = payload.get("pickup_time") or _ts_offset(30)
+        request_id = f"auto-{len(self.db.rides) + 100}"
+        origin = "AUB Campus" if at_aub else (self._user.get("area") or "Home")
+        destination = (self._user.get("area") or "Home") if at_aub else "AUB Campus"
+        self.db.rides.insert(
+            0,
+            {
+                "id": request_id,
+                "from": origin,
+                "to": destination,
+                "time": requested_time,
+                "status": "matching",
+            },
+        )
         top_drivers = self.db.drivers[:3]
         drivers = []
         for idx, driver in enumerate(top_drivers, start=1):
@@ -620,6 +637,8 @@ class MockServerAPI(ServerAPI):
                 "at_aub": at_aub,
                 "area": "AUB Campus" if at_aub else self._user.get("area"),
             },
+            "pickup_time": requested_time,
+            "request_id": request_id,
             "drivers": drivers,
             "message": (
                 "No drivers available right now." if not drivers else "Mock drivers loaded."
@@ -857,12 +876,14 @@ class AuthBackendServerAPI(MockServerAPI):
         rider_session_id: str,
         rider_location: bool | str | int,
         min_avg_rating: Optional[float] = None,
+        pickup_time: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
             return self._backend.automated_request(
                 rider_session_id=rider_session_id,
                 rider_location=rider_location,
                 min_avg_rating=min_avg_rating,
+                pickup_time=pickup_time,
             )
         except ServerAPIError as exc:
             logger.warning(
@@ -873,4 +894,5 @@ class AuthBackendServerAPI(MockServerAPI):
                 rider_session_id=rider_session_id,
                 rider_location=rider_location,
                 min_avg_rating=min_avg_rating,
+                pickup_time=pickup_time,
             )

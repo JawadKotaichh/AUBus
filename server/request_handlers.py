@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 from db.ride import create_ride, update_ride, get_ride, RideStatus
 from db.matching import compute_driver_to_rider_info
@@ -582,11 +583,26 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server(error)
     min_avg_rating = min_avg_rating or 0.0
 
+    pickup_time_raw = payload.get("pickup_time")
+    pickup_time_iso: Optional[str] = None
+    pickup_dt: Optional[datetime] = None
+    if pickup_time_raw:
+        pickup_candidate = str(pickup_time_raw).strip()
+        if pickup_candidate:
+            try:
+                pickup_dt = datetime.fromisoformat(pickup_candidate)
+            except ValueError:
+                return _error_server(
+                    "pickup_time must be an ISO-8601 datetime string."
+                )
+            pickup_time_iso = pickup_dt.isoformat()
+
     drivers_response = get_closest_online_drivers(
         passenger_lat=passenger_lat,
         passenger_long=passenger_long,
         passenger_zone=passenger_zone,
         min_avg=min_avg_rating,
+        requested_at=pickup_dt,
     )
     if drivers_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
         err = (
@@ -597,13 +613,40 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server(f"Automatic ride request failed: {err}")
 
     drivers_payload = drivers_response.payload or {}
-    drivers = drivers_payload.get("drivers") or drivers_payload.get("output", {}).get(
-        "drivers", []
-    )
+    drivers = drivers_payload.get("drivers") or drivers_payload.get(
+        "output", {}
+    ).get("drivers", [])
+
+    schedule_notice: Optional[str] = None
+    if pickup_dt and not drivers:
+        fallback_response = get_closest_online_drivers(
+            passenger_lat=passenger_lat,
+            passenger_long=passenger_long,
+            passenger_zone=passenger_zone,
+            min_avg=min_avg_rating,
+            requested_at=None,
+        )
+        if fallback_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
+            err = (
+                fallback_response.payload.get("error")
+                if fallback_response.payload
+                else "Unable to contact maps service."
+            )
+            return _error_server(f"Automatic ride request failed: {err}")
+        fallback_payload = fallback_response.payload or {}
+        fallback_drivers = fallback_payload.get("drivers") or fallback_payload.get(
+            "output", {}
+        ).get("drivers", [])
+        if fallback_drivers:
+            drivers = fallback_drivers
+            schedule_notice = (
+                "No drivers matched the requested time. Showing nearby drivers instead."
+            )
+
     message = (
         "No online drivers matched the current filters."
         if not drivers
-        else None
+        else schedule_notice
     )
 
     response_payload = {
@@ -619,6 +662,8 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
         },
         "drivers": drivers,
     }
+    if pickup_time_iso:
+        response_payload["pickup_time"] = pickup_time_iso
     if message:
         response_payload["message"] = message
 

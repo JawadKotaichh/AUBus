@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QDateTime
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPointF, QDateTime, QSize, QRectF
+from PyQt6.QtGui import QIcon, QColor, QPainter, QPixmap, QPen, QBrush, QPainterPath
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -384,18 +385,30 @@ QFrame#bottomNav {{
 }}
 QFrame#bottomNav QPushButton {{
     background: transparent;
-    border: none;
+    border: 1px solid transparent;
     color: {colors["muted"]};
-    padding: 6px 10px;
-    min-height: 44px;
+    padding: 6px 12px;
+    min-height: 48px;
     font-weight: 700;
-    border-radius: 8px;
+    border-radius: 12px;
 }}
 QFrame#bottomNav QPushButton:hover {{
     color: {colors["text"]};
+    background-color: {colors["list_bg"]};
+    border-color: {colors["border"]};
+}}
+QFrame#bottomNav QPushButton:pressed {{
+    background-color: {colors["border"]};
 }}
 QFrame#bottomNav QPushButton:checked {{
-    color: {colors["accent"]};
+    color: {colors["button_text"]};
+    background-color: {colors["accent"]};
+    border-color: {colors["accent"]};
+}}
+QFrame#bottomNav QPushButton:checked:hover,
+QFrame#bottomNav QPushButton:checked:pressed {{
+    background-color: {colors["accent_alt"]};
+    border-color: {colors["accent_alt"]};
 }}
 """
 
@@ -771,144 +784,83 @@ class RequestRidePage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
         self.api = api
-        self.current_request_id: Optional[str] = None
         self.session_token: Optional[str] = None
         self._last_selected_driver: Optional[Dict[str, Any]] = None
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
-
-        self.departure_input = QLineEdit()
-        self.destination_input = QLineEdit()
-        self.time_input = QDateTimeEdit()
-        self.time_input.setCalendarPopup(True)
-
-        form.addRow("Departure location", self.departure_input)
-        form.addRow("Destination", self.destination_input)
-        form.addRow("Time", self.time_input)
-
-        self.request_btn = QPushButton("Send request")
-        self.request_btn.setObjectName("requestRideAction")
-        self.request_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.request_btn.setStyleSheet(REQUEST_BUTTON_STYLE)
-        self.request_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.request_btn.setFixedWidth(220)
-        self.request_btn.clicked.connect(self._send_request)
-        form.addRow("", self.request_btn)
-
-        self.status_box = QGroupBox("Waiting page")
-        status_layout = QFormLayout(self.status_box)
-        self.request_status = QLabel("No active request")
-        self.status_detail = QLabel("-")
-        self.cancel_btn = QPushButton("Cancel request")
-        self.cancel_btn.clicked.connect(self._cancel_request)
-        self.cancel_btn.setEnabled(False)
-
-        status_layout.addRow("Status", self.request_status)
-        status_layout.addRow("Details", self.status_detail)
-        status_layout.addWidget(self.cancel_btn)
-
-        layout.addLayout(form)
-        layout.addWidget(self.status_box)
+        layout.setSpacing(16)
 
         self.auto_box = QGroupBox("Automated driver matching")
         auto_form = QFormLayout(self.auto_box)
+        auto_form.setSpacing(12)
         self.location_combo = QComboBox()
         self.location_combo.addItem("I'm at AUB heading home", True)
         self.location_combo.addItem("I'm away from AUB heading to campus", False)
         self.auto_min_rating = QDoubleSpinBox()
         self.auto_min_rating.setRange(0, 5)
         self.auto_min_rating.setSingleStep(0.1)
-        self.auto_btn = QPushButton("Contact closest drivers")
+        self.auto_time_input = QDateTimeEdit(QDateTime.currentDateTime())
+        self.auto_time_input.setCalendarPopup(True)
+        self.auto_time_input.setDisplayFormat("yyyy-MM-dd hh:mm")
+        self.auto_btn = QPushButton("Send automated request")
+        self.auto_btn.setObjectName("requestRideAction")
+        self.auto_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auto_btn.setStyleSheet(REQUEST_BUTTON_STYLE)
+        self.auto_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.auto_btn.setFixedWidth(260)
         self.auto_btn.clicked.connect(self._run_automated_request)
-        self.auto_status = QLabel("No automated request sent.")
+        status_widget = QWidget()
+        status_layout = QVBoxLayout(status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(2)
+        self.auto_status_heading = QLabel("Status: Idle")
+        self.auto_status_heading.setStyleSheet("font-weight: 600;")
+        self.auto_status_message = QLabel("No automated request sent.")
+        self.auto_status_message.setWordWrap(True)
+        status_layout.addWidget(self.auto_status_heading)
+        status_layout.addWidget(self.auto_status_message)
         self.auto_results = QListWidget()
         self.auto_results.setMinimumHeight(100)
         self.auto_results.addItem("Run automated matching to contact nearby drivers.")
 
         auto_form.addRow("Where are you now?", self.location_combo)
         auto_form.addRow("Min rating", self.auto_min_rating)
+        auto_form.addRow("Pickup time", self.auto_time_input)
         auto_form.addRow(self.auto_btn)
-        auto_form.addRow("Status", self.auto_status)
+        auto_form.addRow(status_widget)
         auto_form.addRow(self.auto_results)
 
         layout.addWidget(self.auto_box)
         layout.addStretch()
-
-    def _send_request(self) -> None:
-        payload = {
-            "departure": self.departure_input.text().strip(),
-            "destination": self.destination_input.text().strip(),
-            "when": self.time_input.dateTime().toString(Qt.DateFormat.ISODate),
-        }
-        logger.info("RequestRidePage sending payload=%s", payload)
-        print(f"[RequestRidePage] Sending request payload: {payload}")
-        try:
-            response = self.api.request_ride(**payload)
-        except ServerAPIError as exc:
-            logger.error("RequestRidePage request failed: %s", exc)
-            print(f"[RequestRidePage] Request failed: {exc}")
-            self.request_status.setText(str(exc))
-            self.request_status.setStyleSheet("color: red;")
-            return
-
-        self.current_request_id = response["request_id"]
-        logger.info(
-            "RequestRidePage request succeeded request_id=%s status=%s",
-            self.current_request_id,
-            response.get("status"),
-        )
-        print(
-            "[RequestRidePage] Request succeeded: "
-            f"id={self.current_request_id} status={response.get('status')}"
-        )
-        self.request_status.setText(response["status"])
-        self.status_detail.setText("Awaiting driver decision")
-        self.cancel_btn.setEnabled(True)
-
-    def _cancel_request(self) -> None:
-        if not self.current_request_id:
-            logger.warning("RequestRidePage cancel ignored: no active request.")
-            print("[RequestRidePage] Cancel ignored: no active request id.")
-            return
-        logger.info("RequestRidePage cancelling request_id=%s", self.current_request_id)
-        print(f"[RequestRidePage] Cancel request id={self.current_request_id}")
-        try:
-            response = self.api.cancel_ride(self.current_request_id)
-        except ServerAPIError as exc:
-            logger.error(
-                "RequestRidePage cancel failed for request_id=%s: %s",
-                self.current_request_id,
-                exc,
-            )
-            print(
-                "[RequestRidePage] Cancel request failed: "
-                f"id={self.current_request_id} error={exc}"
-            )
-            self.status_detail.setText(str(exc))
-            return
-        self.request_status.setText(response["status"])
-        self.cancel_btn.setEnabled(False)
-        self.current_request_id = None
-        logger.info("RequestRidePage cancel completed; status=%s", response.get("status"))
-        print(
-            "[RequestRidePage] Cancel completed. "
-            f"status={response.get('status', '<unknown>')}"
-        )
+        self._update_auto_status("Idle", "No automated request sent.", error=False)
 
     def set_user_context(self, user: Dict[str, Any]) -> None:
         self.session_token = user.get("session_token")
         if not self.session_token:
-            self._update_auto_status("Active session not available. Please log in.", True)
+            self._update_auto_status(
+                "Unavailable",
+                "Active session not available. Please log in.",
+                error=True,
+            )
+            return
+        self._update_auto_status(
+            "Ready", "Use the form below to send an automated request.", error=False
+        )
 
     def clear_user_context(self) -> None:
         self.session_token = None
         self.auto_results.clear()
-        self._update_auto_status("Log in to use automated requests.", False)
+        self._update_auto_status(
+            "Signed out", "Log in to use automated requests.", error=False
+        )
 
     def _run_automated_request(self) -> None:
         if not self.session_token:
-            self._update_auto_status("You need to log in again to use this feature.", True)
+            self._update_auto_status(
+                "Unavailable",
+                "You need to log in again to use this feature.",
+                error=True,
+            )
             return
         rider_location = self.location_combo.currentData()
         min_rating = self.auto_min_rating.value()
@@ -916,23 +868,32 @@ class RequestRidePage(QWidget):
             "rider_session_id": self.session_token,
             "rider_location": bool(rider_location),
         }
+        payload["pickup_time"] = self.auto_time_input.dateTime().toString(
+            Qt.DateFormat.ISODate
+        )
         if min_rating > 0:
             payload["min_avg_rating"] = float(min_rating)
         self.auto_btn.setEnabled(False)
-        self._update_auto_status("Contacting nearby drivers...", False)
+        self._update_auto_status(
+            "Matching", "Contacting nearby drivers...", error=False
+        )
         try:
             response = self.api.automated_request(**payload)
         except ServerAPIError as exc:
             logger.error("Automated request failed: %s", exc)
             self.auto_results.clear()
-            self._update_auto_status(str(exc), True)
+            self._update_auto_status("Error", str(exc), error=True)
             self.auto_btn.setEnabled(True)
             return
         drivers = response.get("drivers") or []
         self.auto_results.clear()
         if not drivers:
             self.auto_results.addItem(response.get("message") or "No drivers available.")
-            self._update_auto_status("No drivers available right now.", False)
+            self._update_auto_status(
+                "Idle",
+                response.get("message") or "No drivers available right now.",
+                error=False,
+            )
         else:
             for driver in drivers:
                 username = driver.get("username") or f"Driver {driver.get('driver_id')}"
@@ -941,33 +902,36 @@ class RequestRidePage(QWidget):
                 summary = f"{username} • {duration or '?'} min • {distance or '?'} km"
                 self.auto_results.addItem(summary)
             self._update_auto_status(
-                f"Alerted top {len(drivers)} drivers. Awaiting confirmations.", False
+                "Notified",
+                f"Alerted top {len(drivers)} drivers. Awaiting confirmations.",
+                error=False,
             )
         self.auto_btn.setEnabled(True)
-        self.auto_btn.setEnabled(True)
 
-    def _update_auto_status(self, message: str, error: bool) -> None:
+    def _update_auto_status(self, status: str, message: str, *, error: bool) -> None:
         color = "red" if error else "#2F6B3F"
-        self.auto_status.setText(message)
-        self.auto_status.setStyleSheet(f"color: {color}; font-weight: 500;")
+        self.auto_status_heading.setText(f"Status: {status}")
+        self.auto_status_heading.setStyleSheet(f"font-weight: 600; color: {color};")
+        self.auto_status_message.setText(message)
+        self.auto_status_message.setStyleSheet(f"color: {color};")
 
     def prefill_for_driver(self, driver: Dict[str, Any]) -> None:
         self._last_selected_driver = driver
         driver_name = driver.get("name") or driver.get("username") or "driver"
         driver_area = driver.get("area") or driver.get("zone")
-        if driver_area and not self.destination_input.text().strip():
-            self.destination_input.setText(driver_area)
-        if not self.departure_input.text().strip():
-            default_departure = (
-                "AUB Main Gate" if self.location_combo.currentData() else "Home"
-            )
-            self.departure_input.setText(default_departure)
-        self.request_status.setText("Driver selected")
-        self.request_status.setStyleSheet("color: #2F6B3F;")
-        self.status_detail.setText(
-            f"Pre-filled request for {driver_name}. Review fields then click 'Send request'."
+        if driver_area:
+            area_lc = driver_area.lower()
+            campus_keywords = ("aub", "campus", "gate")
+            target_data = True if any(k in area_lc for k in campus_keywords) else False
+            idx = self.location_combo.findData(target_data)
+            if idx >= 0:
+                self.location_combo.setCurrentIndex(idx)
+        self.auto_time_input.setDateTime(QDateTime.currentDateTime())
+        self._update_auto_status(
+            "Driver selected",
+            f"Prepared automated request context for {driver_name}. Adjust options then click 'Send automated request'.",
+            error=False,
         )
-        self.time_input.setDateTime(QDateTime.currentDateTime())
 
 
 # Driver search ----------------------------------------------------------------
@@ -1918,7 +1882,7 @@ class MainWindow(QMainWindow):
         bn.setContentsMargins(8, 4, 8, 6)
         bn.setSpacing(2)
 
-        self._tabs = [
+        self._tabs: List[Tuple[str, QWidget]] = [
             ("Dashboard", self.dashboard_page),
             ("Request",   self.request_page),
             ("Drivers",   self.search_page),
@@ -1927,12 +1891,17 @@ class MainWindow(QMainWindow):
             ("Profile",   self.profile_page),
         ]
         self._tab_buttons: List[QPushButton] = []
+        self._tab_icon_palettes: Dict[str, Dict[str, QIcon]] = {}
         for i, (label, _) in enumerate(self._tabs):
             btn = QPushButton(label)
             btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(f"Open {label}")
             btn.clicked.connect(lambda _=False, idx=i: self._switch_tab(idx))
+            btn.toggled.connect(lambda _checked, self=self: self._apply_tab_icon_states())
             bn.addWidget(btn, 1)
             self._tab_buttons.append(btn)
+        self._refresh_tab_icons()
 
         root.addWidget(self.stack, 1)
         root.addWidget(self.bottom_nav, 0)
@@ -1950,6 +1919,174 @@ class MainWindow(QMainWindow):
         self.profile_page.logout_requested.connect(self._handle_logout)
         self.apply_theme(theme)
 
+    def _current_theme_colors(self) -> Dict[str, str]:
+        return THEME_PALETTES.get(self.theme, THEME_PALETTES["bolt_light"])
+
+    def _refresh_tab_icons(self) -> None:
+        if not getattr(self, "_tab_buttons", None):
+            return
+        colors = self._current_theme_colors()
+        default_primary = QColor(colors.get("muted", "#6B6F76"))
+        default_secondary = QColor(colors.get("border", "#E8E8E8"))
+        default_highlight = QColor(colors.get("card", "#FFFFFF"))
+        active_primary = QColor(colors.get("button_text", "#FFFFFF"))
+        if active_primary.lightness() < 150:
+            active_primary = QColor("#FFFFFF")
+        active_secondary = QColor(active_primary)
+        active_highlight = QColor(colors.get("accent_alt", colors.get("accent", "#34BB78")))
+
+        self._tab_icon_palettes = {
+            "default": self._build_tab_icon_map(
+                primary_color=default_primary,
+                secondary_color=default_secondary,
+                highlight_color=default_highlight,
+            ),
+            "active": self._build_tab_icon_map(
+                primary_color=active_primary,
+                secondary_color=active_secondary,
+                highlight_color=active_highlight,
+            ),
+        }
+        self._apply_tab_icon_states()
+
+    def _apply_tab_icon_states(self) -> None:
+        if not self._tab_buttons or not self._tab_icon_palettes:
+            return
+        default_icons = self._tab_icon_palettes.get("default", {})
+        active_icons = self._tab_icon_palettes.get("active", {})
+        for btn, (label, _) in zip(self._tab_buttons, self._tabs):
+            icon = active_icons.get(label) if btn.isChecked() else default_icons.get(label)
+            if icon is None:
+                btn.setIcon(QIcon())
+                continue
+            btn.setIcon(icon)
+            btn.setIconSize(QSize(24, 24))
+
+    def _build_tab_icon_map(
+        self,
+        *,
+        primary_color: QColor,
+        secondary_color: QColor,
+        highlight_color: QColor,
+    ) -> Dict[str, QIcon]:
+
+        def make_icon(draw_fn: Callable[[QPainter], None]) -> QIcon:
+            pix = QPixmap(64, 64)
+            pix.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pix)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            draw_fn(painter)
+            painter.end()
+            return QIcon(pix)
+
+        def draw_dashboard(painter: QPainter) -> None:
+            cell = 14
+            spacing = 6
+            start = 10
+            for row in range(2):
+                for col in range(2):
+                    color = primary_color if (row + col) % 2 == 0 else secondary_color
+                    painter.setBrush(QBrush(color))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    rect = QRectF(
+                        start + col * (cell + spacing),
+                        start + row * (cell + spacing),
+                        cell,
+                        cell,
+                    )
+                    painter.drawRoundedRect(rect, 4, 4)
+
+        def draw_request(painter: QPainter) -> None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            pin_path = QPainterPath()
+            pin_path.moveTo(QPointF(32, 54))
+            pin_path.cubicTo(QPointF(50, 30), QPointF(46, 12), QPointF(32, 10))
+            pin_path.cubicTo(QPointF(18, 12), QPointF(14, 30), QPointF(32, 54))
+            painter.setBrush(QBrush(primary_color))
+            painter.drawPath(pin_path)
+            painter.setBrush(QBrush(highlight_color))
+            painter.drawEllipse(QRectF(26, 20, 12, 12))
+
+        def draw_drivers(painter: QPainter) -> None:
+            ring_pen = QPen(primary_color, 5)
+            ring_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            ring_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(ring_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QRectF(14, 14, 36, 36))
+
+            spoke_pen = QPen(secondary_color, 4)
+            spoke_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(spoke_pen)
+            painter.drawLine(QPointF(32, 18), QPointF(32, 46))
+            painter.drawLine(QPointF(18, 32), QPointF(46, 32))
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(highlight_color))
+            painter.drawEllipse(QRectF(26, 26, 12, 12))
+
+        def draw_chats(painter: QPainter) -> None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(primary_color))
+            bubble_rect = QRectF(14, 20, 36, 20)
+            painter.drawRoundedRect(bubble_rect, 10, 10)
+
+            tail = QPainterPath()
+            tail.moveTo(QPointF(28, 40))
+            tail.lineTo(QPointF(22, 50))
+            tail.lineTo(QPointF(34, 40))
+            tail.closeSubpath()
+            painter.drawPath(tail)
+
+            line_pen = QPen(secondary_color, 3)
+            line_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(line_pen)
+            painter.drawLine(QPointF(20, 26), QPointF(42, 26))
+            painter.drawLine(QPointF(20, 34), QPointF(36, 34))
+
+        def draw_trips(painter: QPainter) -> None:
+            path_pen = QPen(primary_color, 5)
+            path_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            path_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(path_pen)
+            path = QPainterPath(QPointF(18, 46))
+            path.cubicTo(QPointF(18, 28), QPointF(44, 52), QPointF(46, 20))
+            painter.drawPath(path)
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(secondary_color))
+            painter.drawEllipse(QRectF(12, 40, 12, 12))
+            painter.drawEllipse(QRectF(40, 12, 12, 12))
+            painter.setBrush(QBrush(highlight_color))
+            painter.drawEllipse(QRectF(15, 43, 6, 6))
+            painter.drawEllipse(QRectF(43, 15, 6, 6))
+
+        def draw_profile(painter: QPainter) -> None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(primary_color))
+            painter.drawEllipse(QRectF(22, 12, 20, 20))
+
+            torso = QPainterPath()
+            torso.moveTo(QPointF(16, 54))
+            torso.cubicTo(QPointF(20, 40), QPointF(44, 40), QPointF(48, 54))
+            torso.lineTo(QPointF(16, 54))
+            painter.setBrush(QBrush(secondary_color))
+            painter.drawPath(torso)
+
+            highlight_pen = QPen(highlight_color, 3)
+            highlight_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(highlight_pen)
+            painter.drawLine(QPointF(24, 34), QPointF(40, 34))
+
+        return {
+            "Dashboard": make_icon(draw_dashboard),
+            "Request": make_icon(draw_request),
+            "Drivers": make_icon(draw_drivers),
+            "Chats": make_icon(draw_chats),
+            "Trips": make_icon(draw_trips),
+            "Profile": make_icon(draw_profile),
+        }
+
     def _switch_tab(self, idx: int) -> None:
         if self.user is None:
             self.statusBar().showMessage("Please sign in first.", 2500)
@@ -1958,6 +2095,7 @@ class MainWindow(QMainWindow):
         for j, b in enumerate(self._tab_buttons):
             b.setChecked(j == idx)
         target_page = self._tabs[idx][1]
+        self._apply_tab_icon_states()
         if target_page is self.profile_page:
             self.profile_page.refresh_from_server(self.user)
         self.stack.setCurrentWidget(target_page)
@@ -2041,6 +2179,7 @@ class MainWindow(QMainWindow):
         self.theme = theme
         app.setStyleSheet(build_stylesheet(theme))
         self.chats_page.set_palette(THEME_PALETTES.get(theme, THEME_PALETTES["bolt_light"]))
+        self._refresh_tab_icons()
 
 
 # Entrypoint -------------------------------------------------------------------
