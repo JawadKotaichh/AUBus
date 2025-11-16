@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 
-from server_api import MockServerAPI, ServerAPI, ServerAPIError
+from server_api import AuthBackendServerAPI, MockServerAPI, ServerAPI, ServerAPIError
 
 ALLOWED_ZONES: List[str] = [
     "Hamra",
@@ -1124,25 +1124,30 @@ class RequestRidePage(QWidget):
             self._update_auto_status("Error", str(exc), error=True)
             self.auto_btn.setEnabled(True)
             return
-        drivers = response.get("drivers") or []
+        message = response.get("message") or ""
+        raw_drivers = response.get("drivers") or []
+        drivers = list(raw_drivers)[:3]
         self.auto_results.clear()
         if not drivers:
-            self.auto_results.addItem(response.get("message") or "No drivers available.")
+            self.auto_results.addItem(message or "No drivers available.")
             self._update_auto_status(
                 "Idle",
-                response.get("message") or "No drivers available right now.",
+                message or "No drivers available right now.",
                 error=False,
             )
         else:
+            if message:
+                self.auto_results.addItem(message)
             for driver in drivers:
                 username = driver.get("username") or f"Driver {driver.get('driver_id')}"
                 duration = driver.get("duration_min")
                 distance = driver.get("distance_km")
-                summary = f"{username} • {duration or '?'} min • {distance or '?'} km"
+                summary = f"{username} | {duration or '?'} min | {distance or '?'} km"
                 self.auto_results.addItem(summary)
             self._update_auto_status(
                 "Notified",
-                f"Alerted top {len(drivers)} drivers. Awaiting confirmations.",
+                message
+                or f"Alerted top {len(drivers)} drivers. Awaiting confirmations.",
                 error=False,
             )
         self.auto_btn.setEnabled(True)
@@ -1821,7 +1826,7 @@ class ProfilePage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, api: Optional[ServerAPI] = None, theme: str = "bolt_light"):
         super().__init__()
-        self.api = api or MockServerAPI()
+        self.api = api or AuthBackendServerAPI()
         self.theme = theme
         self.setWindowTitle("AUBus Client")
         self.resize(1200, 800)

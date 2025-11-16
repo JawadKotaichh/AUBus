@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from db.ride import create_ride, update_ride, get_ride, RideStatus
 from db.matching import compute_driver_to_rider_info
 from db.protocol_db_server import db_msg_status
@@ -447,6 +447,7 @@ def handle_list_rider_rides(payload: Dict[str, Any]) -> ServerResponse:
 
 _AUB_REFERENCE_ADDRESS = "AUB Main Gate, Beirut, Lebanon"
 _AUB_COORDINATES_CACHE: Optional[Tuple[float, float, str]] = None
+_AUTOMATED_DRIVER_LIMIT = 3
 
 
 def _coerce_rider_location_flag(
@@ -613,9 +614,10 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server(f"Automatic ride request failed: {err}")
 
     drivers_payload = drivers_response.payload or {}
-    drivers = drivers_payload.get("drivers") or drivers_payload.get(
+    drivers_raw = drivers_payload.get("drivers") or drivers_payload.get(
         "output", {}
     ).get("drivers", [])
+    drivers: List[Dict[str, Any]] = list(drivers_raw or [])
 
     schedule_notice: Optional[str] = None
     if pickup_dt and not drivers:
@@ -638,10 +640,13 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
             "output", {}
         ).get("drivers", [])
         if fallback_drivers:
-            drivers = fallback_drivers
+            drivers = list(fallback_drivers)
             schedule_notice = (
                 "No drivers matched the requested time. Showing nearby drivers instead."
             )
+
+    if drivers:
+        drivers = drivers[:_AUTOMATED_DRIVER_LIMIT]
 
     message = (
         "No online drivers matched the current filters."
