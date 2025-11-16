@@ -27,6 +27,7 @@ from db.user_db import (
     update_driver_flag,
     get_user_profile,
 )
+from db.schedules import DAY_TO_COLS, ScheduleDay, create_schedule
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -44,6 +45,59 @@ def _redact_auth_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if "password" in redacted:
         redacted["password"] = "***"
     return redacted
+
+
+_VALID_SCHEDULE_DAYS = {key: key for key in DAY_TO_COLS.keys()}
+
+
+def _parse_schedule_clock(value: Any) -> datetime:
+    if value is None:
+        raise ValueError("Time value is required.")
+    text = str(value).strip()
+    if not text:
+        raise ValueError("Time value is required.")
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            today = datetime.utcnow().date()
+            return datetime.combine(today, parsed.time())
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid time '{value}'. Use HH:MM format.")
+
+
+def _normalize_schedule_payload(
+    raw_schedule: Any,
+) -> Tuple[Optional[Dict[str, ScheduleDay]], Optional[str]]:
+    if raw_schedule in (None, ""):
+        return {}, None
+    if not isinstance(raw_schedule, dict):
+        return None, "Schedule must be provided as a mapping keyed by weekday."
+    normalized: Dict[str, ScheduleDay] = {}
+    disabled_time = datetime(1970, 1, 1, 0, 0)
+    for key, entry in raw_schedule.items():
+        if not entry:
+            continue
+        day_key = str(key).strip().lower()
+        if day_key not in _VALID_SCHEDULE_DAYS:
+            return None, f"Unsupported schedule day '{key}'."
+        if not isinstance(entry, dict):
+            return None, f"{key} schedule entry must include go/back times."
+        enabled_flag = entry.get("enabled")
+        if enabled_flag is not None and not bool(enabled_flag):
+            normalized[day_key] = ScheduleDay(disabled_time, disabled_time)
+            continue
+        go_val = entry.get("go") or entry.get("start") or entry.get("depart")
+        back_val = entry.get("back") or entry.get("return") or entry.get("end")
+        if go_val is None or back_val is None:
+            return None, f"{key} requires both 'go' and 'back' times."
+        try:
+            go_dt = _parse_schedule_clock(go_val)
+            back_dt = _parse_schedule_clock(back_val)
+        except ValueError as exc:
+            return None, f"{key}: {exc}"
+        normalized[day_key] = ScheduleDay(go_dt, back_dt)
+    return normalized, None
 
 
 def _build_profile_payload(user_id: int) -> Tuple[Dict[str, Any] | None, ServerResponse | None]:
@@ -86,6 +140,22 @@ def handle_register(
     latitude = payload.get("latitude")
     longitude = payload.get("longitude")
     schedule_id = None
+    schedule_days: Dict[str, ScheduleDay] = {}
+    has_schedule = "schedule" in payload and payload["schedule"]
+    if is_driver and not has_schedule:
+        return _error_server("Drivers must provide at least one commute day.")
+    if has_schedule:
+        schedule_days, schedule_error = _normalize_schedule_payload(payload.get("schedule"))
+        if schedule_error:
+            logger.error("Invalid schedule provided during registration: %s", schedule_error)
+            return _error_server(f"Invalid schedule: {schedule_error}")
+        if not schedule_days:
+            return _error_server("Drivers must provide at least one commute day.")
+        try:
+            schedule_id = create_schedule(days=schedule_days)
+        except ValueError as exc:
+            logger.error("Failed to persist schedule for %s: %s", username, exc)
+            return _error_server(f"Could not save schedule: {exc}")
 
     db_user_creation_response = create_user(
         name=name,
@@ -311,10 +381,12 @@ def handle_update_profile(payload: Dict[str, Any]) -> ServerResponse:
     if role is not None:
         is_driver = str(role).strip().lower() == "driver"
         responses.append(update_driver_flag(user_id=user_id, is_driver=is_driver))
-    schedule_payload = payload.get("schedule")
-    if schedule_payload:
+    if "schedule" in payload:
+        schedule_days, schedule_error = _normalize_schedule_payload(payload.get("schedule"))
+        if schedule_error:
+            return _error_server(f"Invalid schedule: {schedule_error}")
         responses.append(
-            update_user_schedule(user_id=user_id, days=schedule_payload)
+            update_user_schedule(user_id=user_id, days=schedule_days)
         )
     if not responses:
         return _error_server("No updatable fields were provided.")

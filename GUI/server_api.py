@@ -90,6 +90,7 @@ class ServerAPI:
         area: str,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
+        schedule: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         role_text = role if isinstance(role, str) and role.strip() else "passenger"
         normalized_role = role_text.strip().lower()
@@ -113,6 +114,8 @@ class ServerAPI:
         if latitude is not None and longitude is not None:
             payload["latitude"] = float(latitude)
             payload["longitude"] = float(longitude)
+        if schedule:
+            payload["schedule"] = schedule
         output = self._send_request("register", payload)
         if profile["username"]:
             username_key = str(profile["username"]).lower()
@@ -543,10 +546,16 @@ class MockServerAPI(ServerAPI):
             "email": (payload.get("email") or "").strip(),
             "password": payload.get("password") or "",
         }
+        if "is_driver" in payload and "role" not in normalized_payload:
+            normalized_payload["role"] = (
+                "driver" if int(payload.get("is_driver") or 0) else "passenger"
+            )
         self._user.update(normalized_payload)
         if "latitude" in payload and "longitude" in payload:
             self._user["latitude"] = float(payload["latitude"])
             self._user["longitude"] = float(payload["longitude"])
+        if "schedule" in payload and isinstance(payload["schedule"], dict):
+            self._user["schedule"] = payload["schedule"]
         # Do not set _logged_in here; require an explicit login call.
         user_payload = {k: v for k, v in self._user.items() if k != "password"}
         return {"user": user_payload, "session_token": "mock-token"}
@@ -779,6 +788,7 @@ class AuthBackendServerAPI(MockServerAPI):
         area: str,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
+        schedule: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         response = self._backend.register_user(
             name=name,
@@ -789,6 +799,7 @@ class AuthBackendServerAPI(MockServerAPI):
             area=area,
             latitude=latitude,
             longitude=longitude,
+            schedule=schedule,
         )
         backend_user = response.get("user", {})
         if backend_user:

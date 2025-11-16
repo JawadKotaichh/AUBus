@@ -16,6 +16,7 @@ from .protocol_db_server import DBResponse, db_response_type, db_msg_status
 from .schedules import (
     DAY_TO_COLS,
     ScheduleDay,
+    create_schedule,
     update_schedule as update_schedule_entry,
     init_schema_schedule,
 )
@@ -183,6 +184,36 @@ def _parse_sqlite_timestamp(raw: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(cleaned)
     except ValueError:
         return None
+
+
+def _fetch_schedule_payload(schedule_id: int) -> Dict[str, Dict[str, str]]:
+    cols: List[str] = []
+    for dep_col, ret_col in DAY_TO_COLS.values():
+        cols.extend([dep_col, ret_col])
+    try:
+        cur = DB_CONNECTION.execute(
+            f"SELECT {', '.join(cols)} FROM schedule WHERE id = ?",
+            (schedule_id,),
+        )
+    except Exception:
+        return {}
+    row = cur.fetchone()
+    if not row:
+        return {}
+    values = dict(zip(cols, row))
+    schedule: Dict[str, Dict[str, str]] = {}
+    for day_key, (dep_col, ret_col) in DAY_TO_COLS.items():
+        dep_dt = _parse_sqlite_timestamp(values.get(dep_col))
+        ret_dt = _parse_sqlite_timestamp(values.get(ret_col))
+        if not dep_dt or not ret_dt:
+            continue
+        if ret_dt <= dep_dt:
+            continue
+        schedule[day_key] = {
+            "go": dep_dt.strftime("%H:%M"),
+            "back": ret_dt.strftime("%H:%M"),
+        }
+    return schedule
 
 
 def _time_is_within_window(
@@ -719,11 +750,34 @@ def update_user_schedule(
 
         schedule_id = row[0]
         if not schedule_id:
+            if not days:
+                return DBResponse(
+                    db_response_type.ERROR,
+                    db_msg_status.INVALID_INPUT,
+                    _payload_from_status(
+                        db_msg_status.INVALID_INPUT,
+                        "Schedule data must include at least one day.",
+                    ),
+                )
+            try:
+                schedule_id = create_schedule(days=days)
+                cur.execute(
+                    """UPDATE users SET schedule_id = ? WHERE id = ?""",
+                    (schedule_id, user_id),
+                )
+                conn.commit()
+            except ValueError as exc:
+                return DBResponse(
+                    db_response_type.ERROR,
+                    db_msg_status.INVALID_INPUT,
+                    _payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
+                )
             return DBResponse(
-                db_response_type.ERROR,
-                db_msg_status.INVALID_INPUT,
+                db_response_type.SCHEDULE_CREATED,
+                db_msg_status.OK,
                 _payload_from_status(
-                    db_msg_status.INVALID_INPUT, "User has no schedule assigned."
+                    db_msg_status.OK,
+                    "Schedule saved successfully.",
                 ),
             )
 
@@ -984,7 +1038,8 @@ def get_user_profile(user_id: int) -> DBResponse:
                 avg_rating_rider,
                 number_of_rides_driver,
                 number_of_rides_rider,
-                is_driver
+                is_driver,
+                schedule_id
             FROM users
             WHERE id = ?
             """,
@@ -1013,6 +1068,11 @@ def get_user_profile(user_id: int) -> DBResponse:
             "number_of_rides_rider": int(row[10] or 0),
             "is_driver": bool(row[11]),
         }
+        schedule_id = row[12]
+        if schedule_id:
+            schedule = _fetch_schedule_payload(int(schedule_id))
+            if schedule:
+                payload["schedule"] = schedule
         return DBResponse(
             type=db_response_type.USER_FOUND,
             status=db_msg_status.OK,

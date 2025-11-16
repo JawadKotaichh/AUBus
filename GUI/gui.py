@@ -4,10 +4,20 @@ import logging
 import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPointF, QDateTime, QSize, QRectF
-from PyQt6.QtGui import QIcon, QColor, QPainter, QPixmap, QPen, QBrush, QPainterPath
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPointF, QDateTime, QTime, QSize, QRectF
+from PyQt6.QtGui import (
+    QIcon,
+    QColor,
+    QPainter,
+    QPixmap,
+    QPen,
+    QBrush,
+    QPainterPath,
+    QShowEvent,
+)
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
@@ -23,12 +33,12 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QFrame,
     QPushButton,
-    QSpinBox,
     QStackedWidget,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTimeEdit,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -152,6 +162,210 @@ class SuggestionPopup(QListWidget):
         super().focusOutEvent(event)
         self.hide()
 
+
+class DriverScheduleEditor(QGroupBox):
+    """Reusable weekly schedule picker for drivers."""
+
+    def __init__(self, title: str = "Weekly driver schedule") -> None:
+        super().__init__(title)
+        self._days = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+        self._rows: List[Dict[str, Any]] = []
+        self._default_departure = QTime(7, 0)
+        self._default_return = QTime(17, 0)
+
+        layout = QVBoxLayout(self)
+        hint = QLabel(
+            "Select the days you commute to AUB, then enter the time you leave for "
+            "campus and when you head back home."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #6B6F76; font-size: 12px;")
+        layout.addWidget(hint)
+
+        for day in self._days:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+
+            checkbox = QCheckBox(day)
+            checkbox.setToolTip(f"Mark if you drive on {day}s")
+            checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+            checkbox.setStyleSheet(
+                """
+                QCheckBox::indicator {
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 4px;
+                    border: 1px solid #ACB5BD;
+                    background-color: #FFFFFF;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #34BB78;
+                    border: 1px solid #169A63;
+                }
+                """
+            )
+            go_time = QTimeEdit()
+            go_time.setDisplayFormat("HH:mm")
+            go_time.setTime(self._default_departure)
+            back_time = QTimeEdit()
+            back_time.setDisplayFormat("HH:mm")
+            back_time.setTime(self._default_return)
+
+            details = QWidget()
+            details_layout = QHBoxLayout(details)
+            details_layout.setContentsMargins(0, 0, 0, 0)
+            details_layout.setSpacing(6)
+
+            row_record: Dict[str, Any] = {}
+            for editor in (go_time, back_time):
+                editor.setEnabled(False)
+                editor.setCursor(Qt.CursorShape.PointingHandCursor)
+                editor.setButtonSymbols(QTimeEdit.ButtonSymbols.NoButtons)
+                editor.setMinimumWidth(80)
+                editor.timeChanged.connect(
+                    lambda _=None, row_ref=row_record: self._mark_row_custom(row_ref)
+                )
+
+            details_layout.addWidget(QLabel("Go to AUB"))
+            details_layout.addWidget(go_time)
+            details_layout.addWidget(QLabel("Return"))
+            details_layout.addWidget(back_time)
+            details_layout.addStretch()
+            details.setVisible(False)
+
+            checkbox.toggled.connect(
+                lambda checked, row_ref=row_record: self._toggle_row(checked, row_ref)
+            )
+
+            row_layout.addWidget(checkbox, 0)
+            row_layout.addWidget(details, 1)
+            layout.addWidget(row_widget)
+
+            row_record.update(
+                {
+                    "day": day,
+                    "key": day.lower(),
+                    "checkbox": checkbox,
+                    "go": go_time,
+                    "back": back_time,
+                    "panel": details,
+                    "has_data": False,
+                }
+            )
+            self._rows.append(row_record)
+
+    def _mark_row_custom(self, row: Dict[str, Any]) -> None:
+        row["has_data"] = True
+
+    def _toggle_row(self, checked: bool, row: Dict[str, Any]) -> None:
+        go_time = row["go"]
+        back_time = row["back"]
+        panel = row["panel"]
+        go_time.setEnabled(checked)
+        back_time.setEnabled(checked)
+        panel.setVisible(checked)
+        if checked and not row.get("has_data"):
+            go_time.setTime(self._default_departure)
+            back_time.setTime(self._default_return)
+            row["has_data"] = True
+
+    def clear_schedule(self) -> None:
+        for row in self._rows:
+            row["checkbox"].setChecked(False)
+            row["go"].setTime(self._default_departure)
+            row["back"].setTime(self._default_return)
+            row["panel"].setVisible(False)
+            row["has_data"] = False
+
+    def collect_schedule(
+        self, include_disabled: bool = False
+    ) -> Tuple[Dict[str, Dict[str, str]], Optional[str]]:
+        schedule: Dict[str, Dict[str, str]] = {}
+        for row in self._rows:
+            checkbox: QCheckBox = row["checkbox"]
+            if not checkbox.isChecked():
+                if include_disabled:
+                    schedule[row["key"]] = {"enabled": False}
+                continue
+            go_edit: QTimeEdit = row["go"]
+            back_edit: QTimeEdit = row["back"]
+            go_time = go_edit.time()
+            back_time = back_edit.time()
+            if go_time >= back_time:
+                return (
+                    {},
+                    f"{row['day']}: return time must be later than the campus arrival time.",
+                )
+            schedule[row["key"]] = {
+                "go": go_time.toString("HH:mm"),
+                "back": back_time.toString("HH:mm"),
+            }
+        return schedule, None
+
+    def collect_schedule_state(self) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
+        """Return schedule entries for all days, including disabled ones."""
+        schedule: Dict[str, Dict[str, Any]] = {}
+        for row in self._rows:
+            checkbox: QCheckBox = row["checkbox"]
+            if not checkbox.isChecked():
+                schedule[row["key"]] = {"enabled": False}
+                continue
+            go_edit: QTimeEdit = row["go"]
+            back_edit: QTimeEdit = row["back"]
+            go_time = go_edit.time()
+            back_time = back_edit.time()
+            if go_time >= back_time:
+                return (
+                    {},
+                    f"{row['day']}: return time must be later than the campus arrival time.",
+                )
+            schedule[row["key"]] = {
+                "enabled": True,
+                "go": go_time.toString("HH:mm"),
+                "back": back_time.toString("HH:mm"),
+            }
+        return schedule, None
+
+    def set_schedule(self, schedule: Optional[Dict[str, Dict[str, str]]]) -> None:
+        normalized = {}
+        if isinstance(schedule, dict):
+            normalized = {str(k).lower(): v for k, v in schedule.items()}
+        for row in self._rows:
+            entry = normalized.get(row["key"])
+            checkbox: QCheckBox = row["checkbox"]
+            if entry:
+                checkbox.setChecked(True)
+                row["go"].setTime(self._time_from_text(entry.get("go")))
+                row["back"].setTime(self._time_from_text(entry.get("back")))
+                row["panel"].setVisible(True)
+                row["has_data"] = True
+            else:
+                checkbox.setChecked(False)
+                row["go"].setTime(self._default_departure)
+                row["back"].setTime(self._default_return)
+                row["panel"].setVisible(False)
+                row["has_data"] = False
+
+    def _time_from_text(self, text: Optional[str]) -> QTime:
+        if not text:
+            return self._default_departure
+        parts = text.split(":")
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            return QTime(hour, minute)
+        except ValueError:
+            return self._default_departure
 
 def _extract_place_texts(entry: Dict[str, Any]) -> tuple[str, str]:
     primary = (
@@ -517,6 +731,7 @@ class AuthPage(QWidget):
         self.reg_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.reg_role = QComboBox()
         self.reg_role.addItems(["passenger", "driver"])
+        self.reg_role.currentTextChanged.connect(self._update_register_role_state)
         self.reg_area = QLineEdit()
         self.reg_area.textChanged.connect(self._handle_register_area_text)
         self._reg_suggestion_popup = SuggestionPopup(self.reg_area)
@@ -526,6 +741,8 @@ class AuthPage(QWidget):
         self.reg_status = QLabel()
         self.reg_location_status = QLabel()
         self.reg_location_status.setStyleSheet("font-size: 11px; color: #6B6F76;")
+        self.reg_schedule_editor = DriverScheduleEditor("Driver weekly schedule")
+        self.reg_schedule_editor.setVisible(False)
 
         form.addRow("Full name", self.reg_name)
         form.addRow("Email", self.reg_email)
@@ -534,6 +751,7 @@ class AuthPage(QWidget):
         form.addRow("Role", self.reg_role)
         form.addRow("Area / zone", self.reg_area)
         form.addRow("", self.reg_location_status)
+        form.addRow(self.reg_schedule_editor)
 
         sign_up_btn = QPushButton("Create Account")
         sign_up_btn.clicked.connect(self._handle_register)
@@ -545,7 +763,14 @@ class AuthPage(QWidget):
         self._register_lookup_timer.timeout.connect(
             lambda: self._lookup_register_area(triggered_by_user=False)
         )
+        self._update_register_role_state(self.reg_role.currentText())
         return container
+
+    def _update_register_role_state(self, role: str) -> None:
+        is_driver = str(role).strip().lower() == "driver"
+        self.reg_schedule_editor.setVisible(is_driver)
+        if not is_driver:
+            self.reg_schedule_editor.clear_schedule()
 
     def _handle_login(self) -> None:
         username = self.login_username.text().strip()
@@ -573,6 +798,19 @@ class AuthPage(QWidget):
         username = self.reg_username.text().strip()
         area = self.reg_area.text().strip()
         role = self.reg_role.currentText()
+        schedule_payload = None
+        if role == "driver":
+            schedule_payload, schedule_error = self.reg_schedule_editor.collect_schedule()
+            if schedule_error:
+                self._flash_status(self.reg_status, schedule_error, "red")
+                return
+            if not schedule_payload:
+                self._flash_status(
+                    self.reg_status,
+                    "Drivers must add at least one commute day to register.",
+                    "red",
+                )
+                return
         logger.info(
             "GUI register requested username=%s email=%s area=%s role=%s",
             username or "<empty>",
@@ -600,6 +838,7 @@ class AuthPage(QWidget):
                 area=area,
                 latitude=(self._register_location or {}).get("latitude"),
                 longitude=(self._register_location or {}).get("longitude"),
+                schedule=schedule_payload,
             )
         except ServerAPIError as exc:
             logger.error("GUI register failed for %s: %s", username or "<empty>", exc)
@@ -1262,310 +1501,10 @@ class TripsPage(QWidget):
             self.table.setItem(row, 2, ro(trip["date"]))
 
 
-# -------- New: Week-style schedule view (no new imports) --------
-
-class WeekScheduleView(QWidget):
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
-        self.slot_minutes = 15
-        self._blocks: List[Dict[str, str]] = []
-        self.grid = QGridLayout(self)
-        self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(0)
-        self.grid.setVerticalSpacing(0)
-        self._rebuild_base(8*60, 15*60)  # default 08:00–15:00
-
-    # public
-    def set_blocks(self, blocks: List[Dict[str, str]]) -> None:
-        self._blocks = list(blocks or [])
-        # compute min/max time
-        mins = [self._parse(b["start"]) for b in self._blocks] or [8*60]
-        maxs = [self._parse(b["end"]) for b in self._blocks] or [15*60]
-        mn = min(mins)
-        mx = max(maxs)
-        start = (mn // 60) * 60
-        end = (mx // 60 + (1 if mx % 60 else 0)) * 60
-        start = min(start, 8*60)
-        end = max(end, 15*60)
-        self._rebuild_base(start, end)
-        self._add_events()
-
-    # internals
-    def _clear_layout(self) -> None:
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-
-    def _rebuild_base(self, start_min: int, end_min: int) -> None:
-        self._clear_layout()
-        border = THEME_PALETTES["bolt_light"]["border"]
-        list_bg = THEME_PALETTES["bolt_light"]["list_bg"]
-
-        total_slots = (end_min - start_min) // self.slot_minutes
-
-        # headers
-        head = QLabel("")  # corner
-        head.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.grid.addWidget(head, 0, 0)
-
-        for c, day in enumerate(self.days, start=1):
-            lbl = QLabel(day)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("font-weight:700; padding:6px;")
-            self.grid.addWidget(lbl, 0, c)
-
-        # rows & grid cells
-        for r in range(total_slots):
-            minutes = start_min + r*self.slot_minutes
-            show_text = (minutes % 60 == 0)
-            tlabel = QLabel(f"{minutes//60:02d}:00" if show_text else "")
-            tlabel.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            tlabel.setStyleSheet("padding-right:6px;")
-            self.grid.addWidget(tlabel, r+1, 0)
-
-            for c in range(len(self.days)):
-                cell = QFrame()
-                cell.setStyleSheet(
-                    f"background:{list_bg}; border:1px solid {border}; border-left:none;"
-                )
-                self.grid.addWidget(cell, r+1, c+1)
-
-        # stretches
-        for r in range(total_slots):
-            self.grid.setRowStretch(r+1, 1)
-        for c in range(len(self.days)+1):
-            self.grid.setColumnStretch(c, 1)
-
-    def _add_events(self) -> None:
-        # place events with rowSpan according to duration
-        for b in self._blocks:
-            day = b.get("day","Monday")
-            if day not in self.days:
-                continue
-            c = self.days.index(day) + 1
-            start = self._parse(b["start"])
-            end = self._parse(b["end"])
-            row0 = 1 + self._row_index(start)
-            row1 = 1 + self._row_index(end)
-            span = max(1, row1 - row0)
-
-            title = b.get("label") or "Campus"
-            bg, fg = self._color_for(title)
-
-            card = QFrame()
-            card.setStyleSheet(
-                f"background:{bg}; color:{fg}; border-radius:8px; margin:2px;"
-            )
-            inner = QVBoxLayout(card)
-            inner.setContentsMargins(8, 6, 8, 6)
-            inner.setSpacing(2)
-            txt = QLabel(f"{title}\n{b['start']}-{b['end']}")
-            txt.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            txt.setStyleSheet("font-weight:700;" if fg == "#FFFFFF" else "font-weight:600;")
-            inner.addWidget(txt)
-
-            self.grid.addWidget(card, row0, c, span, 1)
-
-    def _row_index(self, minute_of_day: int) -> int:
-        # relative to current grid start
-        # row 0 (grid row 1) corresponds to start_min (kept as first time label row)
-        # compute from first time label on the layout (readable via label at row=1, col=0 text)
-        # we store start at 08:00 baseline by counting rows between 0 label and target; simpler: recompute:
-        # find first time label
-        # For simplicity, we derive from first visible slot time by scanning (fast enough here).
-        # But we know slot 1 label text; reconstruct start from that:
-        start_text = ""
-        w = self.grid.itemAtPosition(1, 0)
-        if w and isinstance(w.widget(), QLabel):
-            start_text = w.widget().text()
-        # fallback: assume 08:00
-        start_hour = 8
-        if start_text:
-            try:
-                start_hour = int(start_text.split(":")[0])
-            except Exception:
-                start_hour = 8
-        start_min = start_hour * 60
-        return (minute_of_day - start_min) // self.slot_minutes
-
-    def _parse(self, hhmm: str) -> int:
-        try:
-            h = int(hhmm[0:2]); m = int(hhmm[3:5])
-            return h*60 + m
-        except Exception:
-            return 8*60
-
-    def _color_for(self, label: str) -> (str, str):
-        up = label.upper()
-        if "EECE 321" in up:
-            return "#2E7D32", "#FFFFFF"   # green
-        if "EECE 334" in up:
-            return "#D32F2F", "#FFFFFF"   # red
-        if "EECE 338" in up:
-            return "#000000", "#FFFFFF"   # black
-        if "MATH" in up:
-            return "#7E57C2", "#FFFFFF"   # purple
-        if "INDE" in up:
-            return "#F28B82", "#000000"   # soft pink
-        return "#34BB78", "#FFFFFF"       # Bolt green default
-
-
-# Schedule page (with week view + table)
-
-class SchedulePage(QWidget):
-    def __init__(self, api: ServerAPI):
-        super().__init__()
-        self.api = api
-        self.blocks: List[Dict[str, str]] = []  # [{'day': 'Monday','start':'08:00','end':'12:00','label': 'EECE 321'}, ...]
-
-        days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-
-        layout = QVBoxLayout(self)
-
-        # ---- Add block form ----
-        form_box = QGroupBox("Add a time block")
-        form = QGridLayout(form_box)
-
-        self.day_dd = QComboBox(); self.day_dd.addItems(days)
-        self.label_in = QLineEdit(); self.label_in.setPlaceholderText("Label (optional) e.g., EECE 321")
-
-        self.start_h = QSpinBox(); self.start_h.setRange(0, 23)
-        self.end_h   = QSpinBox(); self.end_h.setRange(0, 23)
-        self.start_m = QComboBox(); self.start_m.addItems(["00","15","30","45"])
-        self.end_m   = QComboBox(); self.end_m.addItems(["00","15","30","45"])
-
-        add_btn = QPushButton("Add block")
-        add_btn.clicked.connect(self._add_block)
-
-        form.addWidget(QLabel("Day"),          0, 0); form.addWidget(self.day_dd,  0, 1)
-        form.addWidget(QLabel("Label"),        1, 0); form.addWidget(self.label_in, 1, 1)
-        form.addWidget(QLabel("Start (h:m)"),  2, 0)
-        row1 = QHBoxLayout(); w1 = QWidget(); w1.setLayout(row1)
-        row1.addWidget(self.start_h); row1.addWidget(QLabel(":")); row1.addWidget(self.start_m)
-        form.addWidget(w1, 2, 1)
-        form.addWidget(QLabel("End (h:m)"),    3, 0)
-        row2 = QHBoxLayout(); w2 = QWidget(); w2.setLayout(row2)
-        row2.addWidget(self.end_h); row2.addWidget(QLabel(":")); row2.addWidget(self.end_m)
-        form.addWidget(w2, 3, 1)
-        form.addWidget(add_btn, 4, 0, 1, 2)
-
-        # ---- Visual week view (like the screenshot) ----
-        self.preview = WeekScheduleView()
-        preview_box = QGroupBox("Week")
-        pv = QVBoxLayout(preview_box)
-        pv.addWidget(self.preview)
-
-        # ---- Table (for quick remove/save) ----
-        table_box = QGroupBox("Blocks")
-        tlayout = QVBoxLayout(table_box)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Day", "Start", "End", "Label"])
-        self.table.horizontalHeader().setStretchLastSection(True)
-
-        def ro(text: str) -> QTableWidgetItem:
-            it = QTableWidgetItem(text)
-            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            return it
-        self._ro = ro
-
-        actions = QHBoxLayout()
-        self.remove_btn = QPushButton("Remove selected")
-        self.remove_btn.clicked.connect(self._remove_selected)
-        self.save_btn = QPushButton("Save schedule")
-        self.save_btn.clicked.connect(self._save)
-        self.back_btn = QPushButton("Back to Profile")
-        self.back_btn.clicked.connect(self._back_to_profile)
-        actions.addWidget(self.remove_btn)
-        actions.addStretch()
-        actions.addWidget(self.back_btn)
-        actions.addWidget(self.save_btn)
-
-        self.status = QLabel()
-
-        tlayout.addWidget(self.table)
-        tlayout.addLayout(actions)
-        tlayout.addWidget(self.status)
-
-        # assemble
-        layout.addWidget(form_box)
-        layout.addWidget(preview_box, 1)
-        layout.addWidget(table_box)
-
-    # public
-    def load_from_user(self, user: Dict[str, Any]) -> None:
-        self.blocks = list(user.get("schedule") or [])
-        self._render()
-
-    # helpers
-    def _fmt(self, h: int, m_txt: str) -> str:
-        return f"{h:02d}:{m_txt}"
-
-    def _add_block(self) -> None:
-        day = self.day_dd.currentText()
-        label = self.label_in.text().strip()
-        start = self._fmt(self.start_h.value(), self.start_m.currentText())
-        end   = self._fmt(self.end_h.value(),   self.end_m.currentText())
-        if start >= end:
-            self._set_status("End time must be after start time.", bad=True)
-            return
-        self.blocks.append({"day": day, "start": start, "end": end, "label": label})
-        self._render()
-        self._set_status("Added block.", bad=False)
-        self.label_in.clear()
-
-    def _remove_selected(self) -> None:
-        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
-        if not rows:
-            self._set_status("Select a row to remove.", bad=True)
-            return
-        for r in rows:
-            if 0 <= r < len(self.blocks):
-                self.blocks.pop(r)
-        self._render()
-        self._set_status("Removed.", bad=False)
-
-    def _render(self) -> None:
-        # table
-        self.table.setRowCount(len(self.blocks))
-        for r, b in enumerate(self.blocks):
-            self.table.setItem(r, 0, self._ro(b.get("day","")))
-            self.table.setItem(r, 1, self._ro(b.get("start","")))
-            self.table.setItem(r, 2, self._ro(b.get("end","")))
-            self.table.setItem(r, 3, self._ro(b.get("label","")))
-        # preview
-        self.preview.set_blocks(self.blocks)
-
-    def _save(self) -> None:
-        try:
-            updated = self.api.update_profile({"schedule": self.blocks})
-            w = self.window()
-            if hasattr(w, "user") and isinstance(updated, dict):
-                try:
-                    w.user = {**w.user, **updated}
-                except Exception:
-                    pass
-            self._set_status("Schedule saved.", bad=False)
-        except ServerAPIError as exc:
-            self._set_status(str(exc), bad=True)
-
-    def _back_to_profile(self) -> None:
-        w = self.window()
-        if hasattr(w, "_open_profile"):
-            w._open_profile()
-
-    def _set_status(self, msg: str, *, bad: bool) -> None:
-        self.status.setText(msg)
-        self.status.setStyleSheet("color: red;" if bad else "color: green;")
-
-
 # Profile ----------------------------------------------------------------------
 
 class ProfilePage(QWidget):
     theme_changed = pyqtSignal(str)
-    schedule_requested = pyqtSignal()
     profile_updated = pyqtSignal(dict)
     logout_requested = pyqtSignal()
 
@@ -1582,6 +1521,11 @@ class ProfilePage(QWidget):
         self._status_timers: Dict[QLabel, QTimer] = {}
 
         layout = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
 
         self.username_input = QLineEdit()
@@ -1596,6 +1540,7 @@ class ProfilePage(QWidget):
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.role_combo = QComboBox()
         self.role_combo.addItems(["passenger", "driver"])
+        self.role_combo.currentTextChanged.connect(self._handle_role_changed)
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["bolt_light", "bolt_dark", "light", "dark"])
         self.notifications_combo = QComboBox()
@@ -1610,9 +1555,8 @@ class ProfilePage(QWidget):
         form.addRow("Theme", self.theme_combo)
         form.addRow("Notifications", self.notifications_combo)
 
-        self.schedule_btn = QPushButton("Schedule")
-        self.schedule_btn.setToolTip("Define your campus commute blocks")
-        self.schedule_btn.clicked.connect(lambda: self.schedule_requested.emit())
+        self.schedule_editor = DriverScheduleEditor("Driver weekly schedule")
+        self.schedule_editor.setVisible(False)
 
         self.save_btn = QPushButton("Update Profile")
         self.save_btn.clicked.connect(self._save)
@@ -1621,12 +1565,14 @@ class ProfilePage(QWidget):
         self.logout_btn.setEnabled(False)
         self.logout_btn.clicked.connect(lambda: self.logout_requested.emit())
 
-        layout.addLayout(form)
-        layout.addWidget(self.schedule_btn)
-        layout.addWidget(self.save_btn)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.logout_btn)
-        layout.addStretch()
+        content_layout.addLayout(form)
+        content_layout.addWidget(self.schedule_editor)
+        content_layout.addWidget(self.save_btn)
+        content_layout.addWidget(self.status_label)
+        content_layout.addWidget(self.logout_btn)
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
         self._area_lookup_timer.timeout.connect(
             lambda: self._lookup_profile_area(triggered_by_user=False)
         )
@@ -1639,6 +1585,12 @@ class ProfilePage(QWidget):
             self._clear_form()
             return
         self._apply_user_to_fields()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if not (self.user and self.user.get("user_id")):
+            return
+        self.refresh_from_server()
 
     def _clear_form(self) -> None:
         self._populating_form = True
@@ -1658,6 +1610,8 @@ class ProfilePage(QWidget):
         self._selected_area_coords = None
         self._profile_popup.hide()
         self._populating_form = False
+        self.schedule_editor.clear_schedule()
+        self.schedule_editor.setVisible(False)
 
     def _apply_user_to_fields(self) -> None:
         if not self.user:
@@ -1679,8 +1633,14 @@ class ProfilePage(QWidget):
         self.notifications_combo.setCurrentText(
             "enabled" if self.user.get("notifications", True) else "disabled"
         )
+        self.schedule_editor.set_schedule(self.user.get("schedule"))
         self._populating_form = False
         self._update_area_lookup_status()
+        self._handle_role_changed(self.role_combo.currentText())
+
+    def _handle_role_changed(self, role: str) -> None:
+        is_driver = str(role).strip().lower() == "driver"
+        self.schedule_editor.setVisible(is_driver)
 
     def _handle_area_text_changed(self, _: str) -> None:
         if self._populating_form or self._profile_area_populating:
@@ -1760,8 +1720,11 @@ class ProfilePage(QWidget):
             self._status_timers[label] = timer
         timer.start(3000)
 
-    def refresh_from_server(self, user: Optional[Dict[str, Any]]) -> None:
-        user_id = (user or {}).get("user_id")
+    def refresh_from_server(
+        self, user: Optional[Dict[str, Any]] = None, *, quiet: bool = False
+    ) -> None:
+        target_user = user or self.user
+        user_id = (target_user or {}).get("user_id")
         if not user_id:
             logger.warning("Profile refresh skipped: user_id missing.")
             return
@@ -1773,10 +1736,11 @@ class ProfilePage(QWidget):
             self.status_label.setText(str(exc))
             self.status_label.setStyleSheet("color: red;")
             return
-        merged = {**(self.user or {}), **refreshed}
+        merged = {**(target_user or {}), **refreshed}
         self.load_user(merged)
-        self.status_label.setText("Profile synced from server")
-        self.status_label.setStyleSheet("color: green;")
+        if not quiet:
+            self.status_label.setText("Profile synced from server")
+            self.status_label.setStyleSheet("color: green;")
         self.profile_updated.emit(merged)
 
     def _save(self) -> None:
@@ -1814,6 +1778,23 @@ class ProfilePage(QWidget):
         if self._selected_area_coords:
             payload["latitude"] = self._selected_area_coords["latitude"]
             payload["longitude"] = self._selected_area_coords["longitude"]
+        if self.role_combo.currentText() == "driver":
+            schedule_payload, schedule_error = self.schedule_editor.collect_schedule_state()
+            if schedule_error:
+                self._flash_status(self.status_label, schedule_error, "red")
+                return
+            active_days = any(
+                bool(entry.get("enabled"))
+                for entry in schedule_payload.values()
+            )
+            if not active_days:
+                self._flash_status(
+                    self.status_label,
+                    "Drivers must keep at least one commute day enabled.",
+                    "red",
+                )
+                return
+            payload["schedule"] = schedule_payload
         logger.info("Submitting profile update payload=%s", {k: v for k, v in payload.items() if k != "password"})
         try:
             updated_user = self.api.update_profile(payload)
@@ -1832,6 +1813,7 @@ class ProfilePage(QWidget):
         self._flash_status(self.status_label, "Profile updated", "green")
         self.theme_changed.emit(self.theme_combo.currentText())
         self.profile_updated.emit(merged_user)
+        self.refresh_from_server(merged_user, quiet=True)
 
 
 # Main window ------------------------------------------------------------------
@@ -1859,7 +1841,6 @@ class MainWindow(QMainWindow):
         self.chats_page = ChatsPage(self.api)
         self.profile_page = ProfilePage(self.api)
         self.trips_page = TripsPage(self.api)
-        self.schedule_page = SchedulePage(self.api)
 
         for page in [
             self.auth_page,
@@ -1869,7 +1850,6 @@ class MainWindow(QMainWindow):
             self.chats_page,
             self.profile_page,
             self.trips_page,
-            self.schedule_page,
         ]:
             self.stack.addWidget(page)
 
@@ -1914,7 +1894,6 @@ class MainWindow(QMainWindow):
         # hooks
         self.auth_page.authenticated.connect(self._on_authenticated)
         self.profile_page.theme_changed.connect(self.apply_theme)
-        self.profile_page.schedule_requested.connect(self._open_schedule)
         self.profile_page.profile_updated.connect(self._on_profile_updated)
         self.profile_page.logout_requested.connect(self._handle_logout)
         self.apply_theme(theme)
@@ -2096,15 +2075,24 @@ class MainWindow(QMainWindow):
             b.setChecked(j == idx)
         target_page = self._tabs[idx][1]
         self._apply_tab_icon_states()
-        if target_page is self.profile_page:
-            self.profile_page.refresh_from_server(self.user)
         self.stack.setCurrentWidget(target_page)
 
+    def _hydrate_user_from_server(self, user: Dict[str, Any]) -> Dict[str, Any]:
+        user_id = (user or {}).get("user_id")
+        if not user_id:
+            return user
+        try:
+            refreshed = self.api.fetch_profile(user_id=user_id)
+        except ServerAPIError as exc:
+            logger.error("Failed to hydrate user_id=%s: %s", user_id, exc)
+            return user
+        return {**user, **(refreshed or {})}
+
     def _on_authenticated(self, user: Dict[str, Any]) -> None:
-        self.user = user
-        self.profile_page.load_user(user)
-        self.schedule_page.load_from_user(user)  # hydrate schedule
-        self.request_page.set_user_context(user)
+        hydrated = self._hydrate_user_from_server(user)
+        self.user = hydrated
+        self.profile_page.load_user(hydrated)
+        self.request_page.set_user_context(hydrated)
         self._update_logged_in_banner()
         self.apply_theme(user.get("theme", self.theme))
 
@@ -2128,11 +2116,6 @@ class MainWindow(QMainWindow):
         username = self.user.get("username", "")
         if username:
             self.statusBar().showMessage(f"Logged in as {username}")
-
-    def _open_schedule(self) -> None:
-        if self.user:
-            self.schedule_page.load_from_user(self.user)
-        self.stack.setCurrentWidget(self.schedule_page)
 
     def _open_profile(self) -> None:
         self.stack.setCurrentWidget(self.profile_page)
@@ -2164,7 +2147,6 @@ class MainWindow(QMainWindow):
                 return
         self.user = None
         self.profile_page.load_user({})
-        self.schedule_page.load_from_user({})
         self.request_page.clear_user_context()
         for button in self._tab_buttons:
             button.setChecked(False)
