@@ -1,7 +1,7 @@
 import json
 from typing import Any, Dict
 
-from server_client_protocol import (
+from server.server_client_protocol import (
     ClientRequest,
     ServerResponse,
     client_request_type,

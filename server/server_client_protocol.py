@@ -12,6 +12,7 @@ class client_request_type(enum.IntEnum):
     # AUTH
     REGISTER_USER = 1
     LOGIN_USER = 2
+    LOGOUT_USER = 13
 
     # CORE DOMAIN
     CREATE_SCHEDULE = 3
@@ -23,6 +24,8 @@ class client_request_type(enum.IntEnum):
 
     TYPE_CHECK = 9
     UPDATE_PROFILE = 10
+    FETCH_PROFILE = 11
+    LOOKUP_AREA = 12
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,7 @@ class server_response_type(enum.IntEnum):
     TYPE_CHECK = 10
     P2P_CONNECTION = 11
     USER_FOUND = 12
+    PROFILE_UPDATED = 13
 
 
 class msg_status(enum.IntEnum):

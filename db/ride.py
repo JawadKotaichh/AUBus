@@ -5,8 +5,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import sqlite3
 
-from db_connection import DB_CONNECTION
-from db.protocol_db_server import DBResponse, db_msg_status, db_response_type
+from .db_connection import DB_CONNECTION
+from .protocol_db_server import DBResponse, db_msg_status, db_response_type
 
 
 class RideStatus(str, enum.Enum):
@@ -519,7 +519,7 @@ def update_ride(
         DB_CONNECTION.commit()
 
         if rating_updates:
-            from db.user_db import adjust_avg_driver, adjust_avg_rider
+            from .user_db import adjust_avg_driver, adjust_avg_rider
 
             for role, user_id_value, rating_value in rating_updates:
                 adjust_fn = adjust_avg_driver if role == "driver" else adjust_avg_rider

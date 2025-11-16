@@ -43,13 +43,14 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
-    api: Optional[ServerAPI]
     if args.auth_backend:
-        api = AuthBackendServerAPI(
+        api: ServerAPI = ServerAPI(
             host=args.server_host, port=args.server_port, timeout=args.timeout
         )
     else:
-        api = None
+        api = AuthBackendServerAPI(
+            host=args.server_host, port=args.server_port, timeout=args.timeout
+        )
     run(api=api, theme=args.theme)
 
 

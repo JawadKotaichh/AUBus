@@ -5,8 +5,8 @@ import secrets
 import sqlite3
 from typing import Any, Dict, Optional
 
-from db_connection import DB_CONNECTION
-from protocol_db_server import DBResponse, db_msg_status, db_response_type
+from .db_connection import DB_CONNECTION
+from .protocol_db_server import DBResponse, db_msg_status, db_response_type
 
 
 _ACTIVE_SESSION_WINDOW_SECONDS = 5 * 60  # Align with heartbeat expectations.

@@ -1,5 +1,5 @@
 from typing import Any, Dict
-from server_client_protocol import (
+from server.server_client_protocol import (
     ServerResponse,
     server_response_type,
     msg_status,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStackedWidget,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -32,6 +34,105 @@ from PyQt6.QtWidgets import (
 )
 
 from server_api import MockServerAPI, ServerAPI, ServerAPIError
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    logger.addHandler(handler)
+
+
+class SuggestionPopup(QListWidget):
+    """Floating suggestion list anchored to a QLineEdit."""
+
+    suggestionSelected = pyqtSignal(dict)
+
+    def __init__(self, anchor: QLineEdit):
+        super().__init__(anchor.window())
+        self._anchor = anchor
+        self.setWindowFlags(
+            Qt.WindowType.Popup
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QListWidget { background:#fff; border:1px solid #d0d7de; border-top:none; }"
+            "QListWidget::item { padding:8px 12px; }"
+            "QListWidget::item:selected { background:#e6f2ff; }"
+        )
+        self.itemClicked.connect(self._emit_selection)
+
+    def _emit_selection(self, item: QListWidgetItem) -> None:
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(data, dict):
+            self.hide()
+            self.suggestionSelected.emit(data)
+
+    def show_suggestions(self, entries: List[Dict[str, Any]]) -> None:
+        if not entries:
+            self.hide()
+            return
+        self.clear()
+        for entry in entries:
+            item = QListWidgetItem(_format_suggestion_label(entry))
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            tooltip = entry.get("formatted_address")
+            if tooltip:
+                item.setToolTip(str(tooltip))
+            self.addItem(item)
+        row_height = self.sizeHintForRow(0) if self.count() else 24
+        height = min(200, row_height * self.count() + 6)
+        width = self._anchor.width()
+        global_pos = self._anchor.mapToGlobal(QPoint(0, self._anchor.height()))
+        self.setGeometry(global_pos.x(), global_pos.y(), width, height)
+        self.show()
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.hide()
+
+
+def _extract_place_texts(entry: Dict[str, Any]) -> tuple[str, str]:
+    primary = (
+        entry.get("primary_text")
+        or entry.get("display_name")
+        or entry.get("formatted_address")
+        or ""
+    )
+    secondary = entry.get("secondary_text") or entry.get("short_address") or ""
+    primary = str(primary or "").strip()
+    secondary = str(secondary or "").strip()
+    if not primary and secondary:
+        primary, secondary = secondary, ""
+    if primary and secondary and primary.lower() == secondary.lower():
+        secondary = ""
+    return primary, secondary
+
+
+def _format_suggestion_label(entry: Dict[str, Any]) -> str:
+    primary, secondary = _extract_place_texts(entry)
+    if secondary:
+        return f"{primary}\n{secondary}"
+    return primary
+
+
+def _place_text_for_input(entry: Dict[str, Any]) -> str:
+    primary, secondary = _extract_place_texts(entry)
+    if primary:
+        return f"{primary} ({secondary})" if secondary else primary
+    formatted = str(entry.get("formatted_address") or "").strip()
+    if formatted:
+        return formatted
+    if secondary:
+        return secondary
+    return ""
 
 
 THEME_PALETTES = {
@@ -296,6 +397,17 @@ class AuthPage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
         self.api = api
+        self._register_location: Optional[Dict[str, Any]] = None
+        self._register_area_populating = False
+        self._register_lookup_timer = QTimer(self)
+        self._register_lookup_timer.setSingleShot(True)
+        self._register_lookup_timer.setInterval(400)
+        self._status_timers: Dict[QLabel, QTimer] = {}
+        self._register_location: Optional[Dict[str, Any]] = None
+        self._register_area_populating = False
+        self._register_lookup_timer = QTimer(self)
+        self._register_lookup_timer.setSingleShot(True)
+        self._register_lookup_timer.setInterval(400)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         tabs.addTab(self._build_login_tab(), "Log In")
@@ -320,8 +432,15 @@ class AuthPage(QWidget):
         return widget
 
     def _build_register_tab(self) -> QWidget:
-        widget = QWidget()
-        form = QFormLayout(widget)
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.reg_name = QLineEdit()
         self.reg_email = QLineEdit()
@@ -330,70 +449,198 @@ class AuthPage(QWidget):
         self.reg_username = QLineEdit()
         self.reg_password = QLineEdit()
         self.reg_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.reg_area = QLineEdit()
         self.reg_role = QComboBox()
         self.reg_role.addItems(["passenger", "driver"])
+        self.reg_area = QLineEdit()
+        self.reg_area.textChanged.connect(self._handle_register_area_text)
+        self._reg_suggestion_popup = SuggestionPopup(self.reg_area)
+        self._reg_suggestion_popup.suggestionSelected.connect(
+            self._apply_register_suggestion
+        )
         self.reg_status = QLabel()
+        self.reg_location_status = QLabel()
+        self.reg_location_status.setStyleSheet("font-size: 11px; color: #6B6F76;")
 
         form.addRow("Full name", self.reg_name)
         form.addRow("Email", self.reg_email)
         form.addRow("Username", self.reg_username)
         form.addRow("Password", self.reg_password)
-        form.addRow("Area / zone", self.reg_area)
         form.addRow("Role", self.reg_role)
+        form.addRow("Area / zone", self.reg_area)
+        form.addRow("", self.reg_location_status)
 
         sign_up_btn = QPushButton("Create Account")
         sign_up_btn.clicked.connect(self._handle_register)
         form.addRow(sign_up_btn, self.reg_status)
-        return widget
+
+        scroll.setWidget(form_widget)
+        container_layout.addWidget(scroll)
+
+        self._register_lookup_timer.timeout.connect(
+            lambda: self._lookup_register_area(triggered_by_user=False)
+        )
+        return container
 
     def _handle_login(self) -> None:
+        username = self.login_username.text().strip()
+        logger.info("GUI login requested for username=%s", username or "<empty>")
         try:
             user = self.api.login(
-                username=self.login_username.text().strip(),
+                username=username,
                 password=self.login_password.text().strip(),
             )
         except ServerAPIError as exc:
-            self.login_status.setText(str(exc))
-            self.login_status.setStyleSheet("color: red;")
+            logger.error("GUI login failed for %s: %s", username or "<empty>", exc)
+            self._flash_status(self.login_status, str(exc), "red")
             return
 
-        self.login_status.setText("Logged in")
-        self.login_status.setStyleSheet("color: green;")
+        self._flash_status(self.login_status, "Logged in", "green")
+        logger.info(
+            "GUI login succeeded for %s user_id=%s",
+            username or "<empty>",
+            user.get("user_id"),
+        )
         self.authenticated.emit(user)
 
     def _handle_register(self) -> None:
         email = self.reg_email.text().strip()
+        username = self.reg_username.text().strip()
+        area = self.reg_area.text().strip()
+        role = self.reg_role.currentText()
+        logger.info(
+            "GUI register requested username=%s email=%s area=%s role=%s",
+            username or "<empty>",
+            email or "<empty>",
+            area or "<empty>",
+            role,
+        )
         if not is_valid_aub_email(email):
+            logger.warning("GUI register rejected invalid email=%s", email or "<empty>")
             self.reg_status.setText(aub_email_requirement())
+            self.reg_status.setStyleSheet("color: red;")
+            return
+        if not area:
+            logger.warning("GUI register rejected due to empty area.")
+            self.reg_status.setText("Area is required.")
             self.reg_status.setStyleSheet("color: red;")
             return
         try:
             _ = self.api.register_user(
                 name=self.reg_name.text().strip(),
                 email=email,
-                username=self.reg_username.text().strip(),
+                username=username,
                 password=self.reg_password.text().strip(),
-                role=self.reg_role.currentText(),
-                area=self.reg_area.text().strip(),
+                role=role,
+                area=area,
+                latitude=(self._register_location or {}).get("latitude"),
+                longitude=(self._register_location or {}).get("longitude"),
             )
         except ServerAPIError as exc:
-            self.reg_status.setText(str(exc))
-            self.reg_status.setStyleSheet("color: red;")
+            logger.error("GUI register failed for %s: %s", username or "<empty>", exc)
+            self._flash_status(self.reg_status, str(exc), "red")
             return
 
         # Auto-login right after successful registration
+        logger.info("GUI register succeeded for %s. Auto-login starting.", username or "<empty>")
         try:
             user = self.api.login(
-                username=self.reg_username.text().strip(),
+                username=username,
                 password=self.reg_password.text().strip(),
             )
-            self.reg_status.setText(f"Welcome, {user.get('username','')}! Account created and logged in.")
-            self.reg_status.setStyleSheet("color: green;")
+            logger.info(
+                "GUI auto-login succeeded for %s user_id=%s",
+                username or "<empty>",
+                user.get("user_id"),
+            )
+            self._flash_status(
+                self.reg_status,
+                f"Welcome, {user.get('username','')}! Account created and logged in.",
+                "green",
+            )
             self.authenticated.emit(user)
         except ServerAPIError as exc:
-            self.reg_status.setText(f"Account created, but login failed: {exc}")
-            self.reg_status.setStyleSheet("color: orange;")
+            logger.error(
+                "GUI auto-login failed for %s: %s",
+                username or "<empty>",
+                exc,
+            )
+            self._flash_status(
+                self.reg_status, f"Account created, but login failed: {exc}", "orange"
+            )
+
+    def _handle_register_area_text(self, text: str) -> None:
+        if self._register_area_populating:
+            return
+        self._register_lookup_timer.stop()
+        self._clear_register_location(clear_status=False)
+        self._reg_suggestion_popup.hide()
+        if len(text.strip()) >= 3:
+            self._register_lookup_timer.start()
+
+    def _lookup_register_area(self, *, triggered_by_user: bool = True) -> None:
+        query = self.reg_area.text().strip()
+        if not query:
+            if triggered_by_user:
+                self.reg_location_status.setText("Enter an area to search.")
+                self.reg_location_status.setStyleSheet("color: red;")
+            return
+        if not triggered_by_user and len(query) < 3:
+            return
+        try:
+            results = self.api.lookup_area(query)
+        except ServerAPIError as exc:
+            logger.error("Register lookup failed for query=%s: %s", query, exc)
+            if triggered_by_user:
+                self.reg_location_status.setText(str(exc))
+                self.reg_location_status.setStyleSheet("color: red;")
+            return
+        has_results = bool(results)
+        if has_results:
+            self._reg_suggestion_popup.show_suggestions(results)
+            self.reg_location_status.setText(
+                f"Select a location from {len(results)} match(es)."
+            )
+            self.reg_location_status.setStyleSheet("color: green;")
+        elif triggered_by_user:
+            self.reg_location_status.setText("No matching locations found.")
+            self.reg_location_status.setStyleSheet("color: red;")
+
+    def _clear_register_location(self, *, clear_status: bool = True) -> None:
+        self._register_location = None
+        self._register_lookup_timer.stop()
+        if clear_status:
+            self.reg_location_status.clear()
+        self._reg_suggestion_popup.hide()
+
+    def _apply_register_suggestion(self, data: Dict[str, Any]) -> None:
+        latitude = data.get("latitude")
+        longitude = data.get("longitude")
+        formatted = _place_text_for_input(data)
+        if latitude is None or longitude is None:
+            return
+        self._register_area_populating = True
+        self._register_location = {"latitude": latitude, "longitude": longitude}
+        self.reg_area.blockSignals(True)
+        self.reg_area.setText(formatted)
+        self.reg_area.blockSignals(False)
+        self._register_lookup_timer.stop()
+        self._register_area_populating = False
+        self.reg_location_status.setText(
+            f"Lat {latitude:.5f}, Lng {longitude:.5f}"
+        )
+        self.reg_location_status.setStyleSheet("color: green;")
+        self._reg_suggestion_popup.hide()
+
+    def _flash_status(self, label: QLabel, text: str, color: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(f"color: {color};")
+        timer = self._status_timers.get(label)
+        if not timer:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda lab=label: lab.clear())
+            self._status_timers[label] = timer
+        timer.start(3000)
 
 
 # Dashboard --------------------------------------------------------------------
@@ -1099,11 +1346,20 @@ class SchedulePage(QWidget):
 class ProfilePage(QWidget):
     theme_changed = pyqtSignal(str)
     schedule_requested = pyqtSignal()
+    profile_updated = pyqtSignal(dict)
+    logout_requested = pyqtSignal()
 
     def __init__(self, api: ServerAPI):
         super().__init__()
         self.api = api
         self.user: Dict[str, Any] = {}
+        self._populating_form = False
+        self._selected_area_coords: Optional[Dict[str, float]] = None
+        self._profile_area_populating = False
+        self._area_lookup_timer = QTimer(self)
+        self._area_lookup_timer.setSingleShot(True)
+        self._area_lookup_timer.setInterval(400)
+        self._status_timers: Dict[QLabel, QTimer] = {}
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -1113,16 +1369,24 @@ class ProfilePage(QWidget):
         self.email_input.setPlaceholderText("firstname.lastname@mail.aub.edu")
         self.email_input.setToolTip(aub_email_requirement())
         self.area_input = QLineEdit()
+        self.area_input.textChanged.connect(self._handle_area_text_changed)
+        self._profile_popup = SuggestionPopup(self.area_input)
+        self._profile_popup.suggestionSelected.connect(self._select_profile_area_result)
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.role_combo = QComboBox(); self.role_combo.addItems(["passenger", "driver"])
-        self.theme_combo = QComboBox(); self.theme_combo.addItems(["bolt_light", "bolt_dark", "light", "dark"])
-        self.notifications_combo = QComboBox(); self.notifications_combo.addItems(["enabled", "disabled"])
+        self.role_combo = QComboBox()
+        self.role_combo.addItems(["passenger", "driver"])
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["bolt_light", "bolt_dark", "light", "dark"])
+        self.notifications_combo = QComboBox()
+        self.notifications_combo.addItems(["enabled", "disabled"])
+        self.area_lookup_status = QLabel()
         form.addRow("Username", self.username_input)
         form.addRow("Email", self.email_input)
-        form.addRow("Area", self.area_input)
-        form.addRow("Password", self.password_input)
         form.addRow("Role", self.role_combo)
+        form.addRow("Area", self.area_input)
+        form.addRow("", self.area_lookup_status)
+        form.addRow("Password", self.password_input)
         form.addRow("Theme", self.theme_combo)
         form.addRow("Notifications", self.notifications_combo)
 
@@ -1130,51 +1394,224 @@ class ProfilePage(QWidget):
         self.schedule_btn.setToolTip("Define your campus commute blocks")
         self.schedule_btn.clicked.connect(lambda: self.schedule_requested.emit())
 
-        self.save_btn = QPushButton("Save profile")
+        self.save_btn = QPushButton("Update Profile")
         self.save_btn.clicked.connect(self._save)
         self.status_label = QLabel()
+        self.logout_btn = QPushButton("Log Out")
+        self.logout_btn.setEnabled(False)
+        self.logout_btn.clicked.connect(lambda: self.logout_requested.emit())
 
         layout.addLayout(form)
         layout.addWidget(self.schedule_btn)
         layout.addWidget(self.save_btn)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.logout_btn)
         layout.addStretch()
+        self._area_lookup_timer.timeout.connect(
+            lambda: self._lookup_profile_area(triggered_by_user=False)
+        )
 
     def load_user(self, user: Dict[str, Any]) -> None:
-        self.user = user
-        self.username_input.setText(user.get("username", ""))
-        self.email_input.setText(user.get("email", ""))
-        self.area_input.setText(user.get("area", ""))
-        self.role_combo.setCurrentText(user.get("role", "passenger"))
-        self.theme_combo.setCurrentText(user.get("theme", "bolt_light"))
-        self.notifications_combo.setCurrentText("enabled" if user.get("notifications", True) else "disabled")
+        self.user = dict(user or {})
+        has_user = bool(self.user)
+        self.logout_btn.setEnabled(has_user)
+        if not has_user:
+            self._clear_form()
+            return
+        self._apply_user_to_fields()
+
+    def _clear_form(self) -> None:
+        self._populating_form = True
+        self._area_lookup_timer.stop()
+        for widget in (
+            self.username_input,
+            self.email_input,
+            self.area_input,
+            self.password_input,
+        ):
+            widget.clear()
+        self.role_combo.setCurrentIndex(0)
+        self.theme_combo.setCurrentText("bolt_light")
+        self.notifications_combo.setCurrentIndex(0)
+        self.area_lookup_status.clear()
+        self.status_label.clear()
+        self._selected_area_coords = None
+        self._profile_popup.hide()
+        self._populating_form = False
+
+    def _apply_user_to_fields(self) -> None:
+        if not self.user:
+            return
+        self._populating_form = True
+        self._area_lookup_timer.stop()
+        self.username_input.setText(self.user.get("username", ""))
+        self.email_input.setText(self.user.get("email", ""))
+        self.area_input.setText(self.user.get("area", ""))
+        lat = self.user.get("latitude")
+        lng = self.user.get("longitude")
+        if lat is not None and lng is not None:
+            self._selected_area_coords = {"latitude": lat, "longitude": lng}
+        else:
+            self._selected_area_coords = None
+        self._update_area_lookup_status()
+        self.role_combo.setCurrentText(self.user.get("role", "passenger"))
+        self.theme_combo.setCurrentText(self.user.get("theme", "bolt_light"))
+        self.notifications_combo.setCurrentText(
+            "enabled" if self.user.get("notifications", True) else "disabled"
+        )
+        self._populating_form = False
+        self._update_area_lookup_status()
+
+    def _handle_area_text_changed(self, _: str) -> None:
+        if self._populating_form or self._profile_area_populating:
+            return
+        self._selected_area_coords = None
+        self._profile_popup.hide()
+        self._area_lookup_timer.stop()
+        self._update_area_lookup_status()
+        if len(self.area_input.text().strip()) >= 3:
+            self._area_lookup_timer.start()
+
+    def _update_area_lookup_status(self) -> None:
+        if self._selected_area_coords:
+            self.area_lookup_status.setText(
+                f"Lat {self._selected_area_coords['latitude']:.5f}, "
+                f"Lng {self._selected_area_coords['longitude']:.5f}"
+            )
+            self.area_lookup_status.setStyleSheet("color: green;")
+        else:
+            self.area_lookup_status.clear()
+
+    def _lookup_profile_area(self, *, triggered_by_user: bool = True) -> None:
+        query = self.area_input.text().strip()
+        if not query:
+            if triggered_by_user:
+                self.area_lookup_status.setText("Enter an area to search.")
+                self.area_lookup_status.setStyleSheet("color: red;")
+            return
+        if not triggered_by_user and len(query) < 3:
+            return
+        try:
+            results = self.api.lookup_area(query)
+        except ServerAPIError as exc:
+            logger.error("Profile lookup failed for query=%s: %s", query, exc)
+            if triggered_by_user:
+                self.area_lookup_status.setText(str(exc))
+                self.area_lookup_status.setStyleSheet("color: red;")
+            return
+        has_results = bool(results)
+        if has_results:
+            self._profile_popup.show_suggestions(results)
+            self.area_lookup_status.setText(
+                f"Select a location from {len(results)} match(es)."
+            )
+            self.area_lookup_status.setStyleSheet("color: green;")
+        elif triggered_by_user:
+            self._profile_popup.hide()
+            self.area_lookup_status.setText("No matching locations found.")
+            self.area_lookup_status.setStyleSheet("color: red;")
+
+    def _select_profile_area_result(self, data: Dict[str, Any]) -> None:
+        latitude = data.get("latitude")
+        longitude = data.get("longitude")
+        formatted = _place_text_for_input(data)
+        if latitude is None or longitude is None:
+            return
+        self._selected_area_coords = {"latitude": latitude, "longitude": longitude}
+        self._profile_area_populating = True
+        self._populating_form = True
+        self.area_input.blockSignals(True)
+        self.area_input.setText(formatted)
+        self.area_input.blockSignals(False)
+        self._populating_form = False
+        self._profile_area_populating = False
+        self._profile_popup.hide()
+        self._area_lookup_timer.stop()
+        self._update_area_lookup_status()
+
+    def _flash_status(self, label: QLabel, text: str, color: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(f"color: {color};")
+        timer = self._status_timers.get(label)
+        if not timer:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda lab=label: lab.clear())
+            self._status_timers[label] = timer
+        timer.start(3000)
+
+    def refresh_from_server(self, user: Optional[Dict[str, Any]]) -> None:
+        user_id = (user or {}).get("user_id")
+        if not user_id:
+            logger.warning("Profile refresh skipped: user_id missing.")
+            return
+        logger.info("Fetching latest profile for user_id=%s", user_id)
+        try:
+            refreshed = self.api.fetch_profile(user_id=user_id)
+        except ServerAPIError as exc:
+            logger.error("Failed to fetch profile for user_id=%s: %s", user_id, exc)
+            self.status_label.setText(str(exc))
+            self.status_label.setStyleSheet("color: red;")
+            return
+        merged = {**(self.user or {}), **refreshed}
+        self.load_user(merged)
+        self.status_label.setText("Profile synced from server")
+        self.status_label.setStyleSheet("color: green;")
+        self.profile_updated.emit(merged)
 
     def _save(self) -> None:
+        if not self.user or not self.user.get("user_id"):
+            self._flash_status(self.status_label, "No authenticated user to update.", "red")
+            logger.error("Profile update attempted without a logged-in user.")
+            return
         email = self.email_input.text().strip()
         if not is_valid_aub_email(email):
             self.status_label.setText(aub_email_requirement())
             self.status_label.setStyleSheet("color: red;")
+            logger.warning("Profile update rejected due to invalid email: %s", email)
             return
-        profile_data = {
-            "username": self.username_input.text().strip(),
+        area = self.area_input.text().strip()
+        if not area:
+            self.status_label.setText("Area is required.")
+            self.status_label.setStyleSheet("color: red;")
+            logger.warning("Profile update rejected due to empty area.")
+            return
+        username = self.username_input.text().strip()
+        if not username:
+            self._flash_status(self.status_label, "Username cannot be empty.", "red")
+            logger.warning("Profile update rejected due to empty username.")
+            return
+        payload: Dict[str, Any] = {
+            "user_id": self.user["user_id"],
+            "username": username,
             "email": email,
-            "area": self.area_input.text().strip(),
+            "area": area,
             "password": self.password_input.text().strip(),
             "role": self.role_combo.currentText(),
+        }
+        if not payload.get("password"):
+            payload.pop("password", None)
+        if self._selected_area_coords:
+            payload["latitude"] = self._selected_area_coords["latitude"]
+            payload["longitude"] = self._selected_area_coords["longitude"]
+        logger.info("Submitting profile update payload=%s", {k: v for k, v in payload.items() if k != "password"})
+        try:
+            updated_user = self.api.update_profile(payload)
+        except ServerAPIError as exc:
+            logger.error("Profile update failed for user_id=%s: %s", self.user["user_id"], exc)
+            self._flash_status(self.status_label, str(exc), "red")
+            return
+
+        merged_user = {
+            **self.user,
+            **updated_user,
             "theme": self.theme_combo.currentText(),
             "notifications": self.notifications_combo.currentText() == "enabled",
         }
-        try:
-            updated = self.api.update_profile(profile_data)
-            self.user.update(updated or {})
-        except ServerAPIError as exc:
-            self.status_label.setText(str(exc))
-            self.status_label.setStyleSheet("color: red;")
-            return
-
-        self.status_label.setText("Profile saved")
-        self.status_label.setStyleSheet("color: green;")
-        self.theme_changed.emit(profile_data["theme"])
+        self.load_user(merged_user)
+        self._flash_status(self.status_label, "Profile updated", "green")
+        self.theme_changed.emit(self.theme_combo.currentText())
+        self.profile_updated.emit(merged_user)
 
 
 # Main window ------------------------------------------------------------------
@@ -1251,6 +1688,8 @@ class MainWindow(QMainWindow):
         self.auth_page.authenticated.connect(self._on_authenticated)
         self.profile_page.theme_changed.connect(self.apply_theme)
         self.profile_page.schedule_requested.connect(self._open_schedule)
+        self.profile_page.profile_updated.connect(self._on_profile_updated)
+        self.profile_page.logout_requested.connect(self._handle_logout)
         self.apply_theme(theme)
 
     def _switch_tab(self, idx: int) -> None:
@@ -1260,13 +1699,16 @@ class MainWindow(QMainWindow):
             return
         for j, b in enumerate(self._tab_buttons):
             b.setChecked(j == idx)
-        self.stack.setCurrentWidget(self._tabs[idx][1])
+        target_page = self._tabs[idx][1]
+        if target_page is self.profile_page:
+            self.profile_page.refresh_from_server(self.user)
+        self.stack.setCurrentWidget(target_page)
 
     def _on_authenticated(self, user: Dict[str, Any]) -> None:
         self.user = user
         self.profile_page.load_user(user)
         self.schedule_page.load_from_user(user)  # hydrate schedule
-        self.statusBar().showMessage(f"Logged in as {user['username']}")
+        self._update_logged_in_banner()
         self.apply_theme(user.get("theme", self.theme))
 
         self.bottom_nav.setVisible(True)
@@ -1277,6 +1719,19 @@ class MainWindow(QMainWindow):
 
         self._switch_tab(0)
 
+    def _on_profile_updated(self, updated_user: Dict[str, Any]) -> None:
+        if self.user is None:
+            self.user = {}
+        self.user.update(updated_user)
+        self._update_logged_in_banner()
+
+    def _update_logged_in_banner(self) -> None:
+        if not self.user:
+            return
+        username = self.user.get("username", "")
+        if username:
+            self.statusBar().showMessage(f"Logged in as {username}")
+
     def _open_schedule(self) -> None:
         if self.user:
             self.schedule_page.load_from_user(self.user)
@@ -1284,6 +1739,33 @@ class MainWindow(QMainWindow):
 
     def _open_profile(self) -> None:
         self.stack.setCurrentWidget(self.profile_page)
+
+    def _handle_logout(self) -> None:
+        if not self.user:
+            self.stack.setCurrentWidget(self.auth_page)
+            self.statusBar().showMessage("No active session to log out.", 2500)
+            return
+        session_token = self.user.get("session_token")
+        user_id = self.user.get("user_id")
+        logout_kwargs: Dict[str, Any] = {}
+        if session_token:
+            logout_kwargs["session_token"] = session_token
+        if user_id is not None:
+            logout_kwargs["user_id"] = user_id
+        if logout_kwargs:
+            try:
+                self.api.logout(**logout_kwargs)
+            except ServerAPIError as exc:
+                self.statusBar().showMessage(f"Logout failed: {exc}", 4000)
+                return
+        self.user = None
+        self.profile_page.load_user({})
+        self.schedule_page.load_from_user({})
+        for button in self._tab_buttons:
+            button.setChecked(False)
+        self.bottom_nav.setVisible(False)
+        self.stack.setCurrentWidget(self.auth_page)
+        self.statusBar().showMessage("Logged out. Please sign back in.", 3000)
 
     def apply_theme(self, theme: str) -> None:
         app = QApplication.instance()

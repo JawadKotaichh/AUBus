@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 import socket
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -19,10 +21,38 @@ from typing import Any, Dict, List, Optional
 _ACTION_TO_REQUEST_TYPE = {
     "register": 1,  # client_request_type.REGISTER_USER
     "login": 2,  # client_request_type.LOGIN_USER
+    "logout": 13,  # client_request_type.LOGOUT_USER
     "update_profile": 10,  # client_request_type.UPDATE_PROFILE
+    "fetch_profile": 11,  # client_request_type.FETCH_PROFILE
+    "lookup_area": 12,  # client_request_type.LOOKUP_AREA
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
+_SENSITIVE_KEYS = {"password", "session_token"}
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    logger.addHandler(handler)
+
+
+def _scrub_sensitive(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, val in value.items():
+            if isinstance(key, str) and key.lower() in _SENSITIVE_KEYS:
+                sanitized[key] = "***"
+            else:
+                sanitized[key] = _scrub_sensitive(val)
+        return sanitized
+    if isinstance(value, list):
+        return [_scrub_sensitive(item) for item in value]
+    return value
 
 
 class ServerAPIError(RuntimeError):
@@ -56,6 +86,8 @@ class ServerAPI:
         password: str,
         role: str | bool,
         area: str,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
     ) -> Dict[str, Any]:
         role_text = role if isinstance(role, str) and role.strip() else "passenger"
         normalized_role = role_text.strip().lower()
@@ -76,6 +108,9 @@ class ServerAPI:
             "area": profile["area"],
             "is_driver": 1 if profile["role"] == "driver" else 0,
         }
+        if latitude is not None and longitude is not None:
+            payload["latitude"] = float(latitude)
+            payload["longitude"] = float(longitude)
         output = self._send_request("register", payload)
         if profile["username"]:
             username_key = str(profile["username"]).lower()
@@ -86,27 +121,33 @@ class ServerAPI:
         output = self._send_request(
             "login", {"username": username, "password": password}
         )
-        if not isinstance(output, dict):
-            raise ServerAPIError("Unexpected payload returned by backend login.")
-
+        user_payload = self._coerce_user_payload(output)
         cache_key = username.strip().lower()
-        profile = self._user_profiles.get(cache_key, {})
-        profile.setdefault("username", username.strip())
-        profile.setdefault("email", "")
-        profile.setdefault("name", profile.get("username"))
-        profile.setdefault("area", "")
-        profile.setdefault("role", "passenger")
-        profile.setdefault("theme", _DEFAULT_THEME)
-        profile.setdefault("notifications", True)
-        profile["user_id"] = output.get("user_id")
-
-        merged_user = {
-            **profile,
-            "session_token": output.get("session_token"),
-            "user_id": output.get("user_id"),
+        self._user_profiles[cache_key] = {
+            **self._user_profiles.get(cache_key, {}),
+            **{k: user_payload.get(k) for k in ("username", "email", "area")},
         }
-        self._user_profiles[cache_key] = profile
-        return merged_user
+        return user_payload
+
+    def logout(
+        self,
+        *,
+        session_token: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if session_token:
+            payload["session_token"] = session_token
+        if user_id is not None:
+            payload["user_id"] = user_id
+        if not payload:
+            raise ServerAPIError("session_token or user_id is required to logout.")
+        output = self._send_request("logout", payload)
+        if isinstance(output, dict):
+            return output
+        if isinstance(output, str):
+            return {"message": output}
+        return {}
 
     def fetch_weather(self) -> Dict[str, Any]:
         return self._send_request("weather", None)
@@ -160,7 +201,68 @@ class ServerAPI:
         return self._send_request("chat_message", {"chat_id": chat_id, "body": body})
 
     def update_profile(self, profile_data: Dict[str, Any]) -> Dict[str, Any]:
-        return self._send_request("update_profile", {"profile": profile_data})
+        output = self._send_request("update_profile", profile_data)
+        return self._coerce_user_payload(output, expect_session=False)
+
+    def fetch_profile(self, *, user_id: int) -> Dict[str, Any]:
+        output = self._send_request("fetch_profile", {"user_id": user_id})
+        return self._coerce_user_payload(output, expect_session=False)
+
+    def lookup_area(self, query: str, *, limit: int = 5) -> List[Dict[str, Any]]:
+        payload = {"query": query, "limit": limit}
+        result = self._send_request("lookup_area", payload)
+        if not isinstance(result, dict):
+            raise ServerAPIError("Unexpected response for lookup_area.")
+        candidates = result.get("results")
+        if not isinstance(candidates, list) or not candidates:
+            raise ServerAPIError("No matching locations were found.")
+        normalized: List[Dict[str, Any]] = []
+        for entry in candidates:
+            if not isinstance(entry, dict):
+                continue
+            if (
+                "latitude" in entry
+                and "longitude" in entry
+            ):
+                lat = entry.get("latitude")
+                lng = entry.get("longitude")
+                if lat is None or lng is None:
+                    continue
+                formatted = (
+                    entry.get("formatted_address")
+                    or entry.get("short_address")
+                    or entry.get("primary_text")
+                    or entry.get("display_name")
+                    or ""
+                )
+                formatted = str(formatted).strip()
+                primary = (
+                    entry.get("primary_text")
+                    or entry.get("display_name")
+                    or formatted
+                ).strip()
+                secondary = (
+                    entry.get("secondary_text")
+                    or entry.get("short_address")
+                    or ""
+                ).strip()
+                if primary and secondary and primary.lower() == secondary.lower():
+                    secondary = ""
+                formatted_value = formatted or (
+                    ", ".join([text for text in (primary, secondary) if text]) or primary
+                )
+                normalized.append(
+                    {
+                        "formatted_address": formatted_value,
+                        "primary_text": primary,
+                        "secondary_text": secondary,
+                        "latitude": float(lat),
+                        "longitude": float(lng),
+                    }
+                )
+        if not normalized:
+            raise ServerAPIError("lookup_area response missing expected fields.")
+        return normalized
 
     # Internal helpers -----------------------------------------------------------
     def _send_request(self, action: str, payload: Optional[Dict[str, Any]]) -> Any:
@@ -171,6 +273,7 @@ class ServerAPI:
             "payload": payload or {},
         }
         raw = (json.dumps(request) + "\n").encode("utf-8")
+        self._log_request(action, payload)
 
         try:
             with socket.create_connection(
@@ -179,6 +282,13 @@ class ServerAPI:
                 sock.sendall(raw)
                 response = self._read_response(sock)
         except OSError as exc:
+            logger.error(
+                "Socket error while calling %s:%s action=%s: %s",
+                self.host,
+                self.port,
+                action,
+                exc,
+            )
             raise ServerAPIError(
                 f"Unable to reach backend at {self.host}:{self.port}: {exc}"
             ) from exc
@@ -186,6 +296,7 @@ class ServerAPI:
         payload_wrapper = response.get("payload")
         if not isinstance(payload_wrapper, dict):
             payload_wrapper = {}
+        self._log_response(action, response, payload_wrapper)
         if response.get("status") != _SERVER_STATUS_OK:
             message = payload_wrapper.get("error") or "Backend rejected the request."
             raise ServerAPIError(message)
@@ -204,6 +315,38 @@ class ServerAPI:
             return json.loads(buffer.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise ServerAPIError("Malformed response from server") from exc
+
+    def _log_request(
+        self, action: str, payload: Optional[Dict[str, Any]]
+    ) -> None:
+        logger.info(
+            "[Client->Server] action=%s payload=%s",
+            action,
+            _scrub_sensitive(payload or {}),
+        )
+
+    def _log_response(
+        self, action: str, response: Dict[str, Any], payload_wrapper: Dict[str, Any]
+    ) -> None:
+        logger.info(
+            "[Client<-Server] action=%s status=%s payload=%s",
+            action,
+            response.get("status"),
+            _scrub_sensitive(payload_wrapper),
+        )
+
+    def _coerce_user_payload(
+        self, payload: Dict[str, Any] | None, expect_session: bool = True
+    ) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ServerAPIError("Backend returned an empty payload.")
+        user_payload = payload.get("user")
+        if not isinstance(user_payload, dict):
+            raise ServerAPIError("Backend did not include user profile details.")
+        result = dict(user_payload)
+        if expect_session:
+            result["session_token"] = payload.get("session_token")
+        return result
 
 
 # Mock implementation -----------------------------------------------------------
@@ -309,10 +452,13 @@ class MockServerAPI(ServerAPI):
             ],
         )
         self._user = {
+            "user_id": 1,
             "username": "guest",
             "email": "guest@mail.aub.edu",
             "password": "guest",
             "area": "Hamra",
+            "latitude": 33.8938,
+            "longitude": 35.5018,
             "role": "passenger",
             "theme": "bolt_light",
             "notifications": True,
@@ -326,10 +472,15 @@ class MockServerAPI(ServerAPI):
 
     # Override network calls -----------------------------------------------------
     def _send_request(self, action: str, payload: Optional[Dict[str, Any]]) -> Any:  # type: ignore[override]
+        logger.info(
+            "[MockAPI] action=%s payload=%s", action, _scrub_sensitive(payload or {})
+        )
         handler = getattr(self, f"_handle_{action}", None)
         if not handler:
             raise ServerAPIError(f"Unsupported mock action: {action}")
-        return handler(payload or {})
+        result = handler(payload or {})
+        logger.info("[MockAPI] action=%s result=%s", action, _scrub_sensitive(result))
+        return result
 
     # Mock handlers --------------------------------------------------------------
     def _handle_login(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -342,7 +493,8 @@ class MockServerAPI(ServerAPI):
         if username != stored_username or password != stored_password:
             raise ServerAPIError("Invalid credentials")
         self._logged_in = True
-        return {**self._user, "token": "mock-token"}
+        user_payload = {k: v for k, v in self._user.items() if k != "password"}
+        return {"user": user_payload, "session_token": "mock-token"}
 
     def _handle_register(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         # Update stored "account"; GUI will auto-login after this step.
@@ -353,8 +505,18 @@ class MockServerAPI(ServerAPI):
             "password": payload.get("password") or "",
         }
         self._user.update(normalized_payload)
+        if "latitude" in payload and "longitude" in payload:
+            self._user["latitude"] = float(payload["latitude"])
+            self._user["longitude"] = float(payload["longitude"])
         # Do not set _logged_in here; require an explicit login call.
-        return {"message": "Registered", "username": normalized_payload["username"]}
+        user_payload = {k: v for k, v in self._user.items() if k != "password"}
+        return {"user": user_payload, "session_token": "mock-token"}
+
+    def _handle_logout(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._logged_in:
+            return {"message": "Already logged out."}
+        self._logged_in = False
+        return {"message": "Logged out."}
 
     def _handle_weather(self, _: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
@@ -433,8 +595,63 @@ class MockServerAPI(ServerAPI):
 
     def _handle_update_profile(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
-        self._user.update(payload.get("profile", {}))
-        return self._user
+        updates = {k: v for k, v in payload.items() if k != "user_id"}
+        self._user.update(updates)
+        user_payload = {k: v for k, v in self._user.items() if k != "password"}
+        return {"user": user_payload}
+
+    def _handle_fetch_profile(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {"user": {k: v for k, v in self._user.items() if k != "password"}}
+
+    def _handle_lookup_area(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        query = (payload.get("query") or "").strip().lower()
+        limit = payload.get("limit")
+        try:
+            max_results = int(limit) if limit is not None else 5
+        except ValueError:
+            max_results = 5
+        if max_results <= 0:
+            max_results = 5
+        mock_bank = {
+            "hamra": (33.8945, 35.4809, "Hamra, Beirut, Lebanon"),
+            "verdun": (33.8819, 35.4884, "Verdun, Beirut, Lebanon"),
+            "baabda": (33.8333, 35.5333, "Baabda, Lebanon"),
+            "aub main gate": (33.9023, 35.4859, "AUB Main Gate, Beirut, Lebanon"),
+        }
+        results = []
+        for key, (lat, lng, formatted) in mock_bank.items():
+            if key in query:
+                parts = formatted.split(",", 1)
+                primary = parts[0].strip()
+                secondary = parts[1].strip() if len(parts) > 1 else ""
+                results.append(
+                    {
+                        "latitude": lat,
+                        "longitude": lng,
+                        "formatted_address": formatted,
+                        "display_name": primary,
+                        "short_address": secondary or None,
+                        "primary_text": primary,
+                        "secondary_text": secondary,
+                    }
+                )
+        if not results:
+            fallback = "Beirut, Lebanon"
+            parts = fallback.split(",", 1)
+            primary = parts[0].strip()
+            secondary = parts[1].strip() if len(parts) > 1 else ""
+            results.append(
+                {
+                    "latitude": 33.8938,
+                    "longitude": 35.5018,
+                    "formatted_address": fallback,
+                    "display_name": primary,
+                    "short_address": secondary or None,
+                    "primary_text": primary,
+                    "secondary_text": secondary,
+                }
+            )
+        return {"results": results[:max_results]}
 
 
 class AuthBackendServerAPI(MockServerAPI):
@@ -458,6 +675,8 @@ class AuthBackendServerAPI(MockServerAPI):
         password: str,
         role: str | bool,
         area: str,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
     ) -> Dict[str, Any]:
         response = self._backend.register_user(
             name=name,
@@ -466,18 +685,21 @@ class AuthBackendServerAPI(MockServerAPI):
             password=password,
             role=role,
             area=area,
+            latitude=latitude,
+            longitude=longitude,
         )
-        # Mirror last submitted profile so other mock views stay coherent.
+        backend_user = response.get("user", {})
+        if backend_user:
+            self._user.update(backend_user)
         cleaned_username = username.strip()
-        self._user.update(
-            {
-                "name": name.strip() or cleaned_username,
-                "username": cleaned_username,
-                "email": email.strip(),
-                "area": area.strip(),
-                "role": role,
-            }
-        )
+        self._user.setdefault("name", name.strip() or cleaned_username)
+        self._user.setdefault("username", cleaned_username)
+        self._user.setdefault("email", email.strip())
+        self._user.setdefault("area", area.strip())
+        if latitude is not None and longitude is not None:
+            self._user["latitude"] = float(latitude)
+            self._user["longitude"] = float(longitude)
+        self._user["role"] = role
         self._logged_in = False
         return response
 
@@ -486,3 +708,29 @@ class AuthBackendServerAPI(MockServerAPI):
         self._user.update(user)
         self._logged_in = True
         return user
+
+    def logout(
+        self,
+        *,
+        session_token: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        result = self._backend.logout(
+            session_token=session_token,
+            user_id=user_id,
+        )
+        self._logged_in = False
+        return result
+
+    def update_profile(self, profile_data: Dict[str, Any]) -> Dict[str, Any]:
+        updated = self._backend.update_profile(profile_data)
+        self._user.update(updated)
+        return updated
+
+    def fetch_profile(self, *, user_id: int) -> Dict[str, Any]:
+        profile = self._backend.fetch_profile(user_id=user_id)
+        self._user.update(profile)
+        return profile
+
+    def lookup_area(self, query: str, *, limit: int = 5) -> List[Dict[str, Any]]:
+        return self._backend.lookup_area(query, limit=limit)

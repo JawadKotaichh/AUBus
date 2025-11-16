@@ -1,23 +1,28 @@
 from __future__ import annotations
+
 import base64
 from datetime import datetime
 import hashlib
 import hmac
+import logging
+import sys
 import os
+import sqlite3
+import threading
 from typing import Any, Dict, List, Mapping, Optional, Tuple
-from db_connection import DB_CONNECTION
-from protocol_db_server import DBResponse, db_response_type, db_msg_status
+from .db_connection import DB_CONNECTION, get_db_file_path
+from .protocol_db_server import DBResponse, db_response_type, db_msg_status
 
-from schedules import (
+from .schedules import (
     DAY_TO_COLS,
     ScheduleDay,
     update_schedule as update_schedule_entry,
     init_schema_schedule,
 )
-from ride import init_ride_schema
-from user_sessions import init_user_sessions_schema
-from maps_service import geocode_address
-from zones import ZONE_BOUNDARIES, ZoneBoundary, get_zone_by_name
+from .ride import init_ride_schema
+from .user_sessions import init_user_sessions_schema
+from .maps_service import geocode_address
+from .zones import ZONE_BOUNDARIES, ZoneBoundary, get_zone_by_name
 
 
 def _payload_from_status(status: db_msg_status, content: Any) -> Dict[str, Any]:
@@ -27,6 +32,97 @@ def _payload_from_status(status: db_msg_status, content: Any) -> Dict[str, Any]:
 
 
 ALLOWED_EMAIL_DOMAINS: Tuple[str, ...] = ("@mail.aub.edu", "@aub.edu.lb")
+_REQUIRED_SCHEMA_TABLES: Tuple[str, ...] = (
+    "users",
+    "schedule",
+    "rides",
+    "user_sessions",
+)
+
+_SCHEMA_INIT_LOCK = threading.Lock()
+_SCHEMA_INITIALIZED = False
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    logger.addHandler(handler)
+
+
+def _zone_coordinate_fallback(area: str) -> Optional[Tuple[float, float, str]]:
+    """
+    Attempt to derive approximate coordinates for a user provided area.
+
+    Tries to match the supplied string to one of the known ZONE_BOUNDARIES entries
+    and falls back to substring matches so values such as "Hamra, Beirut" still
+    resolve to the Hamra bounding box.
+    """
+    cleaned = (area or "").strip()
+    if not cleaned:
+        return None
+
+    zone = get_zone_by_name(cleaned)
+    if zone is None:
+        lowered = cleaned.lower()
+        for key, candidate in ZONE_BOUNDARIES.items():
+            if key in lowered:
+                zone = candidate
+                break
+
+    if zone is None:
+        return None
+
+    latitude = (zone.latitude_min + zone.latitude_max) / 2.0
+    longitude = (zone.longitude_min + zone.longitude_max) / 2.0
+    return latitude, longitude, zone.name
+
+
+def _validate_coordinates(
+    latitude: float | str | None, longitude: float | str | None
+) -> Tuple[float, float]:
+    try:
+        lat_f = float(latitude)  # type: ignore[arg-type]
+        lng_f = float(longitude)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError("Latitude and longitude must be valid numbers.")
+    if not (-90.0 <= lat_f <= 90.0):
+        raise ValueError("Latitude must be between -90 and 90 degrees.")
+    if not (-180.0 <= lng_f <= 180.0):
+        raise ValueError("Longitude must be between -180 and 180 degrees.")
+    return lat_f, lng_f
+
+
+def _resolve_coordinates_for_area(area: str) -> Tuple[float, float, str]:
+    """
+    Resolve area text into latitude/longitude using geocode with zone fallback.
+    """
+    cleaned_area = (area or "").strip()
+    if not cleaned_area:
+        raise ValueError("Area value cannot be empty when resolving coordinates.")
+    try:
+        lat, lng, _formatted = geocode_address(cleaned_area)
+        return lat, lng, "geocoded"
+    except Exception as geocode_err:
+        fallback = _zone_coordinate_fallback(cleaned_area)
+        if fallback:
+            latitude, longitude, zone_label = fallback
+            logger.warning(
+                "Geocoding failed for '%s' (%s). Using zone fallback '%s' -> (%s, %s).",
+                cleaned_area,
+                geocode_err,
+                zone_label,
+                latitude,
+                longitude,
+            )
+            return latitude, longitude, f"zone:{zone_label}"
+        raise ValueError(
+            f"Could not geocode area '{cleaned_area}': {geocode_err}. "
+            "No fallback zone matched this area."
+        )
 
 
 def _is_allowed_aub_email(value: str) -> bool:
@@ -153,10 +249,44 @@ class password_hashing:
 # ==============================
 # INITIAL DATABASE CREATION
 # ==============================
+def _schema_is_initialized() -> bool:
+    placeholders = ", ".join("?" for _ in _REQUIRED_SCHEMA_TABLES)
+    try:
+        cur = DB_CONNECTION.execute(
+            f"""
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table' AND name IN ({placeholders})
+            """,
+            _REQUIRED_SCHEMA_TABLES,
+        )
+        existing = {row[0] for row in cur.fetchall()}
+    except sqlite3.Error:
+        return False
+    return set(_REQUIRED_SCHEMA_TABLES).issubset(existing)
+
+
 def creating_initial_db() -> DBResponse:
     try:
         db = DB_CONNECTION
         cursor = db.cursor()
+        db_path = get_db_file_path()
+        db_file_exists = db_path.exists() if db_path else False
+        logger.info("DB init requested. path=%s exists=%s", db_path, db_file_exists)
+        if db_file_exists and _schema_is_initialized():
+            logger.info("Existing DB schema detected. Skipping creation.")
+            return DBResponse(
+                db_response_type.SESSION_CREATED,
+                db_msg_status.OK,
+                _payload_from_status(
+                    db_msg_status.OK,
+                    "Existing database detected. Reusing current schema.",
+                ),
+            )
+
+        if db_path and not db_file_exists:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info("Created DB directory %s", db_path.parent)
         email_constraint = " OR ".join(
             f"lower(email) LIKE '%{domain}'" for domain in ALLOWED_EMAIL_DOMAINS
         )
@@ -190,17 +320,36 @@ def creating_initial_db() -> DBResponse:
         init_ride_schema()
         init_user_sessions_schema()
         db.commit()
+        logger.info("DB schema created successfully at %s", db_path)
         return DBResponse(
             db_response_type.SESSION_CREATED,
             db_msg_status.OK,
             _payload_from_status(db_msg_status.OK, "User table created or verified."),
         )
     except Exception as e:
+        logger.exception("Failed to initialize DB schema: %s", e)
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
             _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
         )
+
+
+def ensure_schema_initialized() -> None:
+    global _SCHEMA_INITIALIZED
+    if _SCHEMA_INITIALIZED:
+        return
+    with _SCHEMA_INIT_LOCK:
+        if _SCHEMA_INITIALIZED:
+            return
+        response = creating_initial_db()
+        if response.status != db_msg_status.OK:
+            payload = response.payload or {}
+            message = payload.get("error") or payload.get("output") or "Unknown DB init error."
+            logger.error("DB schema initialization failed: %s", message)
+            raise RuntimeError(f"Failed to initialize database schema: {message}")
+        _SCHEMA_INITIALIZED = True
+        logger.info("DB schema initialization confirmed.")
 
 
 def create_user(
@@ -219,6 +368,7 @@ def create_user(
     number_of_rides_rider: int = 0,
 ):
     """Create a new user and insert into DB."""
+    ensure_schema_initialized()
     try:
         cleaned_email = (email or "").strip()
         if not cleaned_email:
@@ -248,20 +398,37 @@ def create_user(
                 ),
             )
 
-        # Ensure we have latitude/longitude
-        if latitude is None or longitude is None:
+        coord_source = "provided"
+        if latitude is not None and longitude is not None:
             try:
-                lat, lng, _formatted = geocode_address(cleaned_area)
-                latitude = lat
-                longitude = lng
-            except Exception as geocode_err:
+                latitude, longitude = _validate_coordinates(latitude, longitude)
+                coord_source = "client"
+            except ValueError as coord_err:
+                logger.error(
+                    "Client provided invalid coordinates for '%s': %s",
+                    cleaned_area,
+                    coord_err,
+                )
                 return DBResponse(
                     db_response_type.ERROR,
                     db_msg_status.INVALID_INPUT,
-                    _payload_from_status(
-                        db_msg_status.INVALID_INPUT,
-                        f"Could not geocode area '{cleaned_area}': {geocode_err}",
-                    ),
+                    _payload_from_status(db_msg_status.INVALID_INPUT, str(coord_err)),
+                )
+        else:
+            try:
+                latitude, longitude, coord_source = _resolve_coordinates_for_area(
+                    cleaned_area
+                )
+            except ValueError as coord_err:
+                logger.error(
+                    "Could not resolve coordinates for '%s': %s",
+                    cleaned_area,
+                    coord_err,
+                )
+                return DBResponse(
+                    db_response_type.ERROR,
+                    db_msg_status.INVALID_INPUT,
+                    _payload_from_status(db_msg_status.INVALID_INPUT, str(coord_err)),
                 )
 
         conn = DB_CONNECTION
@@ -307,6 +474,17 @@ def create_user(
         )
         conn.commit()
         user_id = cur.lastrowid
+        logger.info(
+            "User created: id=%s username=%s email=%s area=%s driver=%s coords=%s/%s source=%s",
+            user_id,
+            username,
+            cleaned_email,
+            cleaned_area,
+            bool(is_driver),
+            latitude,
+            longitude,
+            coord_source,
+        )
         return DBResponse(
             db_response_type.USER_CREATED,
             db_msg_status.OK,
@@ -317,6 +495,7 @@ def create_user(
         )
 
     except Exception as e:
+        logger.exception("Failed to create user %s: %s", username, e)
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
@@ -327,6 +506,7 @@ def create_user(
 # Verifying if user password is correct
 def authenticate(username: str, password: str) -> DBResponse:
     """Authenticate a user by verifying username and password."""
+    ensure_schema_initialized()
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
@@ -337,6 +517,7 @@ def authenticate(username: str, password: str) -> DBResponse:
         row = cur.fetchone()
 
         if not row:
+            logger.warning("Authenticate failed: username %s not found", username)
             return DBResponse(
                 db_response_type.ERROR,
                 db_msg_status.NOT_FOUND,
@@ -346,6 +527,7 @@ def authenticate(username: str, password: str) -> DBResponse:
         user_id, salt_b64, hash_b64 = row
         ph = password_hashing()
         if ph.verify_password(password, salt_b64, hash_b64):
+            logger.info("Authenticate success for username %s (user_id=%s)", username, user_id)
             return DBResponse(
                 db_response_type.USER_AUTHENTICATED,
                 db_msg_status.OK,
@@ -355,12 +537,14 @@ def authenticate(username: str, password: str) -> DBResponse:
                 ),
             )
         else:
+            logger.warning("Authenticate failed: invalid password for username %s", username)
             return DBResponse(
                 db_response_type.ERROR,
                 db_msg_status.INVALID_INPUT,
                 _payload_from_status(db_msg_status.INVALID_INPUT, "Invalid password."),
             )
     except Exception as e:
+        logger.exception("Authenticate error for username %s: %s", username, e)
         return DBResponse(
             db_response_type.ERROR,
             db_msg_status.INVALID_INPUT,
@@ -444,6 +628,78 @@ def update_email(user_id: int, new_email: str) -> DBResponse:
         )
 
 
+def update_area(
+    user_id: int,
+    new_area: str,
+    latitude: float | str | None = None,
+    longitude: float | str | None = None,
+) -> DBResponse:
+    cleaned_area = (new_area or "").strip()
+    if not cleaned_area:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(
+                db_msg_status.INVALID_INPUT, "Area cannot be empty when updating."
+            ),
+        )
+    coord_source = "client"
+    if latitude is not None and longitude is not None:
+        try:
+            latitude_f, longitude_f = _validate_coordinates(latitude, longitude)
+            latitude, longitude = latitude_f, longitude_f
+        except ValueError as exc:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
+            )
+    else:
+        try:
+            latitude, longitude, coord_source = _resolve_coordinates_for_area(
+                cleaned_area
+            )
+        except ValueError as exc:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
+            )
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE users
+            SET area = ?, latitude = ?, longitude = ?
+            WHERE id = ?
+            """,
+            (cleaned_area, float(latitude), float(longitude), user_id),
+        )
+        conn.commit()
+        logger.info(
+            "Area updated for user_id=%s -> %s (coords source=%s)",
+            user_id,
+            cleaned_area,
+            coord_source,
+        )
+        return DBResponse(
+            db_response_type.USER_UPDATED,
+            db_msg_status.OK,
+            _payload_from_status(
+                db_msg_status.OK,
+                f"Area updated to {cleaned_area} (coords source={coord_source}).",
+            ),
+        )
+    except Exception as e:
+        logger.exception("Failed to update area for user_id=%s: %s", user_id, e)
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
+        )
+
+
 def update_user_schedule(
     user_id: int, days: Mapping[str, "ScheduleDay"] | None = None
 ) -> DBResponse:
@@ -515,6 +771,36 @@ def update_password(user_id: int, new_password: str) -> DBResponse:
             db_response_type.USER_UPDATED,
             db_msg_status.OK,
             _payload_from_status(db_msg_status.OK, "Password updated successfully."),
+        )
+    except Exception as e:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
+        )
+
+
+def update_driver_flag(user_id: int, is_driver: bool) -> DBResponse:
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE users SET is_driver=? WHERE id=?""",
+            (1 if is_driver else 0, user_id),
+        )
+        conn.commit()
+        logger.info(
+            "Role updated for user_id=%s -> %s",
+            user_id,
+            "driver" if is_driver else "passenger",
+        )
+        return DBResponse(
+            db_response_type.USER_UPDATED,
+            db_msg_status.OK,
+            _payload_from_status(
+                db_msg_status.OK,
+                f"Role updated to {'driver' if is_driver else 'passenger'}.",
+            ),
         )
     except Exception as e:
         return DBResponse(
@@ -690,7 +976,10 @@ def get_user_profile(user_id: int) -> DBResponse:
                 id,
                 name,
                 username,
+                email,
                 area,
+                latitude,
+                longitude,
                 avg_rating_driver,
                 avg_rating_rider,
                 number_of_rides_driver,
@@ -714,12 +1003,15 @@ def get_user_profile(user_id: int) -> DBResponse:
             "user_id": int(row[0]),
             "name": row[1],
             "username": row[2],
-            "area": row[3],
-            "avg_rating_driver": float(row[4]) if row[4] is not None else 0.0,
-            "avg_rating_rider": float(row[5]) if row[5] is not None else 0.0,
-            "number_of_rides_driver": int(row[6] or 0),
-            "number_of_rides_rider": int(row[7] or 0),
-            "is_driver": bool(row[8]),
+            "email": row[3],
+            "area": row[4],
+            "latitude": float(row[5]) if row[5] is not None else None,
+            "longitude": float(row[6]) if row[6] is not None else None,
+            "avg_rating_driver": float(row[7]) if row[7] is not None else 0.0,
+            "avg_rating_rider": float(row[8]) if row[8] is not None else 0.0,
+            "number_of_rides_driver": int(row[9] or 0),
+            "number_of_rides_rider": int(row[10] or 0),
+            "is_driver": bool(row[11]),
         }
         return DBResponse(
             type=db_response_type.USER_FOUND,
@@ -898,3 +1190,6 @@ def fetch_online_drivers(
             },
         ),
     )
+
+
+ensure_schema_initialized()
