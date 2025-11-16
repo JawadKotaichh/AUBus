@@ -1,6 +1,7 @@
 import logging
 import logging
 import sys
+from datetime import datetime
 from typing import Any, Dict, Tuple, Optional
 
 from db.matching import compute_driver_to_rider_info
@@ -15,6 +16,7 @@ from db.user_sessions import create_session, delete_session
 from server.utils import _ok_server, _error_server
 from db.user_db import fetch_online_drivers
 from db.maps_service import geocode_address, search_locations
+from db.zones import zone_for_coordinates
 
 from db.user_db import (
     update_email,
@@ -336,15 +338,35 @@ def get_drivers_with_filters(payload: Dict[str, Any]) -> ServerResponse:
     Process a client request to fetch online drivers based on optional filters.
     Accepts min_avg_rating, area, and requested_at in the payload.
     """
+    payload = payload or {}
     try:
-        filters = [
-            "min_avg_rating",
-            "zone",
-            "requested_at",
-            "limit",
-            "candidate_multiplier",
-        ]
-        parameters = {f: payload.get(f, None) for f in filters}
+        logger.info("Driver search requested payload=%s", payload)
+        min_rating = payload.get("min_avg_rating")
+        if min_rating is None:
+            min_rating = payload.get("min_rating")
+        zone = payload.get("zone") or payload.get("area")
+        name_filter = payload.get("name")
+        if isinstance(name_filter, str):
+            name_filter = name_filter.strip() or None
+        username_filter = payload.get("username")
+        if isinstance(username_filter, str):
+            username_filter = username_filter.strip() or None
+        requested_at = payload.get("requested_at") or payload.get("when")
+        if not requested_at:
+            requested_at = datetime.utcnow().isoformat()
+        limit = payload.get("limit") or payload.get("page_size")
+        candidate_multiplier = payload.get("candidate_multiplier")
+        directory_mode = bool(payload.get("directory"))
+        parameters = {
+            "min_avg_rating": min_rating,
+            "zone": zone,
+            "requested_at": requested_at,
+            "limit": limit,
+            "candidate_multiplier": candidate_multiplier,
+            "name": name_filter,
+            "username": username_filter,
+            "directory": directory_mode,
+        }
 
         response = fetch_online_drivers(
             min_avg_rating=parameters.get("min_avg_rating"),
@@ -352,6 +374,9 @@ def get_drivers_with_filters(payload: Dict[str, Any]) -> ServerResponse:
             requested_at=parameters.get("requested_at"),
             limit=parameters.get("limit"),
             candidate_multiplier=parameters.get("candidate_multiplier"),
+            name=parameters.get("name"),
+            username=parameters.get("username"),
+            enforce_schedule_window=not directory_mode,
         )
 
         if response.status != db_msg_status.OK:
@@ -360,30 +385,59 @@ def get_drivers_with_filters(payload: Dict[str, Any]) -> ServerResponse:
                 if response.payload
                 else "Unknown database error"
             )
+            logger.error("Driver search failed: %s", err)
             return _error_server(f"Fetching drivers failed: {err}")
 
-        drivers_info = response.payload.get("drivers", [])
+        payload_wrapper = response.payload or {}
+        drivers_output = payload_wrapper.get("output") or payload_wrapper
+        drivers_info = drivers_output.get("drivers", [])
         if not drivers_info:
+            logger.info("Driver search returned no matches.")
             return _ok_server(
                 payload={
+                    "items": [],
                     "drivers": [],
+                    "total": 0,
                     "message": "No online drivers found matching filters.",
+                    "filters_used": {
+                        key: value
+                        for key, value in parameters.items()
+                        if value is not None
+                    },
                 },
                 resp_type=server_response_type.USER_FOUND,
             )
 
-        return _ok_server(
-            payload={
-                "filters_used": {
-                    f: parameters.get(f)
-                    for f in filters
-                    if parameters.get(f) is not None
-                },
-                "count": len(drivers_info),
-                "drivers": drivers_info,
+        normalized_drivers = []
+        for driver in drivers_info:
+            lat = driver.get("latitude")
+            lng = driver.get("longitude")
+            zone = zone_for_coordinates(lat, lng) if lat is not None and lng is not None else None
+            area_display = zone.name if zone else driver.get("area")
+            vehicle_display = driver.get("vehicle") or driver.get("vehicle_type") or "N/A"
+            normalized = {
+                "id": driver.get("id"),
+                "name": driver.get("name") or driver.get("username"),
+                "username": driver.get("username"),
+                "area": area_display,
+                "rating": driver.get("avg_rating_driver", 0.0),
+                "vehicle": vehicle_display,
+                "trips_per_week": driver.get("number_of_rides_driver", 0),
+                "last_seen": driver.get("last_seen"),
+                "schedule_window": driver.get("schedule_window"),
+            }
+            normalized_drivers.append(normalized)
+
+        payload_out = {
+            "filters_used": {
+                key: value for key, value in parameters.items() if value is not None
             },
-            resp_type=server_response_type.USER_FOUND,
-        )
+            "total": len(normalized_drivers),
+            "items": normalized_drivers,
+            "drivers": normalized_drivers,
+        }
+        logger.info("Driver search returning %s matches", len(normalized_drivers))
+        return _ok_server(payload=payload_out, resp_type=server_response_type.USER_FOUND)
 
     except Exception as e:
         # Catch unexpected runtime errors

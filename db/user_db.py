@@ -1034,6 +1034,7 @@ def fetch_online_drivers(
     candidate_multiplier: Optional[int] = None,
     username: Optional[str] = None,
     name: Optional[str] = None,
+    enforce_schedule_window: bool = True,
 ) -> DBResponse:
     """Return drivers that are online and available for the requested moment.
     Optional filters: min_avg_rating, zone, username (partial/CI), name (partial/CI).
@@ -1159,7 +1160,9 @@ def fetch_online_drivers(
     for row in rows:
         dep_time = row[10]
         ret_time = row[11]
-        if not _time_is_within_window(request_dt, dep_time, ret_time):
+        if enforce_schedule_window and not _time_is_within_window(
+            request_dt, dep_time, ret_time
+        ):
             continue
         drivers.append(
             {

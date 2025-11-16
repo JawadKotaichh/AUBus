@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QDateTime
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -31,9 +31,62 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QHeaderView,
+    QSizePolicy,
 )
 
 from server_api import MockServerAPI, ServerAPI, ServerAPIError
+
+ALLOWED_ZONES: List[str] = [
+    "Hamra",
+    "Achrafieh",
+    "Bchara el Khoury",
+    "Forn El Chebak",
+    "Ghobeiry",
+    "Hadath",
+    "Hazmieh",
+    "Dawra",
+    "Khalde",
+    "Saida",
+    "Jounieh",
+    "Baabda",
+    "Beirut",
+]
+
+REQUEST_BUTTON_STYLE = """
+QPushButton#requestRideAction {
+    padding: 10px 18px;
+    border-radius: 8px;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                      stop:0 #2dc98c, stop:1 #1cae76);
+    color: #ffffff;
+    font-weight: 600;
+    border: 0px;
+}
+QPushButton#requestRideAction:hover {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                      stop:0 #32d299, stop:1 #1fc280);
+}
+QPushButton#requestRideAction:pressed {
+    background-color: #169762;
+}
+"""
+
+DRIVER_ROW_BUTTON_STYLE = """
+QPushButton#driverRequestBtn {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid #1fb37b;
+    background-color: #e9fbf3;
+    color: #157a55;
+}
+QPushButton#driverRequestBtn:hover {
+    background-color: #d9f4e8;
+}
+QPushButton#driverRequestBtn:pressed {
+    background-color: #c3ebda;
+}
+"""
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -719,6 +772,8 @@ class RequestRidePage(QWidget):
         super().__init__()
         self.api = api
         self.current_request_id: Optional[str] = None
+        self.session_token: Optional[str] = None
+        self._last_selected_driver: Optional[Dict[str, Any]] = None
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -733,8 +788,13 @@ class RequestRidePage(QWidget):
         form.addRow("Time", self.time_input)
 
         self.request_btn = QPushButton("Send request")
+        self.request_btn.setObjectName("requestRideAction")
+        self.request_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.request_btn.setStyleSheet(REQUEST_BUTTON_STYLE)
+        self.request_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.request_btn.setFixedWidth(220)
         self.request_btn.clicked.connect(self._send_request)
-        form.addWidget(self.request_btn)
+        form.addRow("", self.request_btn)
 
         self.status_box = QGroupBox("Waiting page")
         status_layout = QFormLayout(self.status_box)
@@ -750,6 +810,29 @@ class RequestRidePage(QWidget):
 
         layout.addLayout(form)
         layout.addWidget(self.status_box)
+
+        self.auto_box = QGroupBox("Automated driver matching")
+        auto_form = QFormLayout(self.auto_box)
+        self.location_combo = QComboBox()
+        self.location_combo.addItem("I'm at AUB heading home", True)
+        self.location_combo.addItem("I'm away from AUB heading to campus", False)
+        self.auto_min_rating = QDoubleSpinBox()
+        self.auto_min_rating.setRange(0, 5)
+        self.auto_min_rating.setSingleStep(0.1)
+        self.auto_btn = QPushButton("Contact closest drivers")
+        self.auto_btn.clicked.connect(self._run_automated_request)
+        self.auto_status = QLabel("No automated request sent.")
+        self.auto_results = QListWidget()
+        self.auto_results.setMinimumHeight(100)
+        self.auto_results.addItem("Run automated matching to contact nearby drivers.")
+
+        auto_form.addRow("Where are you now?", self.location_combo)
+        auto_form.addRow("Min rating", self.auto_min_rating)
+        auto_form.addRow(self.auto_btn)
+        auto_form.addRow("Status", self.auto_status)
+        auto_form.addRow(self.auto_results)
+
+        layout.addWidget(self.auto_box)
         layout.addStretch()
 
     def _send_request(self) -> None:
@@ -758,29 +841,133 @@ class RequestRidePage(QWidget):
             "destination": self.destination_input.text().strip(),
             "when": self.time_input.dateTime().toString(Qt.DateFormat.ISODate),
         }
+        logger.info("RequestRidePage sending payload=%s", payload)
+        print(f"[RequestRidePage] Sending request payload: {payload}")
         try:
             response = self.api.request_ride(**payload)
         except ServerAPIError as exc:
+            logger.error("RequestRidePage request failed: %s", exc)
+            print(f"[RequestRidePage] Request failed: {exc}")
             self.request_status.setText(str(exc))
             self.request_status.setStyleSheet("color: red;")
             return
 
         self.current_request_id = response["request_id"]
+        logger.info(
+            "RequestRidePage request succeeded request_id=%s status=%s",
+            self.current_request_id,
+            response.get("status"),
+        )
+        print(
+            "[RequestRidePage] Request succeeded: "
+            f"id={self.current_request_id} status={response.get('status')}"
+        )
         self.request_status.setText(response["status"])
         self.status_detail.setText("Awaiting driver decision")
         self.cancel_btn.setEnabled(True)
 
     def _cancel_request(self) -> None:
         if not self.current_request_id:
+            logger.warning("RequestRidePage cancel ignored: no active request.")
+            print("[RequestRidePage] Cancel ignored: no active request id.")
             return
+        logger.info("RequestRidePage cancelling request_id=%s", self.current_request_id)
+        print(f"[RequestRidePage] Cancel request id={self.current_request_id}")
         try:
             response = self.api.cancel_ride(self.current_request_id)
         except ServerAPIError as exc:
+            logger.error(
+                "RequestRidePage cancel failed for request_id=%s: %s",
+                self.current_request_id,
+                exc,
+            )
+            print(
+                "[RequestRidePage] Cancel request failed: "
+                f"id={self.current_request_id} error={exc}"
+            )
             self.status_detail.setText(str(exc))
             return
         self.request_status.setText(response["status"])
         self.cancel_btn.setEnabled(False)
         self.current_request_id = None
+        logger.info("RequestRidePage cancel completed; status=%s", response.get("status"))
+        print(
+            "[RequestRidePage] Cancel completed. "
+            f"status={response.get('status', '<unknown>')}"
+        )
+
+    def set_user_context(self, user: Dict[str, Any]) -> None:
+        self.session_token = user.get("session_token")
+        if not self.session_token:
+            self._update_auto_status("Active session not available. Please log in.", True)
+
+    def clear_user_context(self) -> None:
+        self.session_token = None
+        self.auto_results.clear()
+        self._update_auto_status("Log in to use automated requests.", False)
+
+    def _run_automated_request(self) -> None:
+        if not self.session_token:
+            self._update_auto_status("You need to log in again to use this feature.", True)
+            return
+        rider_location = self.location_combo.currentData()
+        min_rating = self.auto_min_rating.value()
+        payload: Dict[str, Any] = {
+            "rider_session_id": self.session_token,
+            "rider_location": bool(rider_location),
+        }
+        if min_rating > 0:
+            payload["min_avg_rating"] = float(min_rating)
+        self.auto_btn.setEnabled(False)
+        self._update_auto_status("Contacting nearby drivers...", False)
+        try:
+            response = self.api.automated_request(**payload)
+        except ServerAPIError as exc:
+            logger.error("Automated request failed: %s", exc)
+            self.auto_results.clear()
+            self._update_auto_status(str(exc), True)
+            self.auto_btn.setEnabled(True)
+            return
+        drivers = response.get("drivers") or []
+        self.auto_results.clear()
+        if not drivers:
+            self.auto_results.addItem(response.get("message") or "No drivers available.")
+            self._update_auto_status("No drivers available right now.", False)
+        else:
+            for driver in drivers:
+                username = driver.get("username") or f"Driver {driver.get('driver_id')}"
+                duration = driver.get("duration_min")
+                distance = driver.get("distance_km")
+                summary = f"{username} • {duration or '?'} min • {distance or '?'} km"
+                self.auto_results.addItem(summary)
+            self._update_auto_status(
+                f"Alerted top {len(drivers)} drivers. Awaiting confirmations.", False
+            )
+        self.auto_btn.setEnabled(True)
+        self.auto_btn.setEnabled(True)
+
+    def _update_auto_status(self, message: str, error: bool) -> None:
+        color = "red" if error else "#2F6B3F"
+        self.auto_status.setText(message)
+        self.auto_status.setStyleSheet(f"color: {color}; font-weight: 500;")
+
+    def prefill_for_driver(self, driver: Dict[str, Any]) -> None:
+        self._last_selected_driver = driver
+        driver_name = driver.get("name") or driver.get("username") or "driver"
+        driver_area = driver.get("area") or driver.get("zone")
+        if driver_area and not self.destination_input.text().strip():
+            self.destination_input.setText(driver_area)
+        if not self.departure_input.text().strip():
+            default_departure = (
+                "AUB Main Gate" if self.location_combo.currentData() else "Home"
+            )
+            self.departure_input.setText(default_departure)
+        self.request_status.setText("Driver selected")
+        self.request_status.setStyleSheet("color: #2F6B3F;")
+        self.status_detail.setText(
+            f"Pre-filled request for {driver_name}. Review fields then click 'Send request'."
+        )
+        self.time_input.setDateTime(QDateTime.currentDateTime())
 
 
 # Driver search ----------------------------------------------------------------
@@ -789,41 +976,51 @@ class SearchDriverPage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
         self.api = api
+        self.request_driver_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 
         layout = QVBoxLayout(self)
         filter_box = QGroupBox("Filters")
         filter_layout = QGridLayout(filter_box)
 
-        self.area_input = QLineEdit()
+        self.name_input = QLineEdit()
+        self.area_combo = QComboBox()
+        self.area_combo.addItem("Any area", None)
+        for zone in ALLOWED_ZONES:
+            self.area_combo.addItem(zone, zone)
         self.min_rating_input = QDoubleSpinBox()
         self.min_rating_input.setRange(0, 5)
         self.min_rating_input.setSingleStep(0.1)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["rating", "name", "area"])
 
-        filter_layout.addWidget(QLabel("Area"), 0, 0)
-        filter_layout.addWidget(self.area_input, 0, 1)
-        filter_layout.addWidget(QLabel("Min rating"), 1, 0)
-        filter_layout.addWidget(self.min_rating_input, 1, 1)
-        filter_layout.addWidget(QLabel("Sort by"), 2, 0)
-        filter_layout.addWidget(self.sort_combo, 2, 1)
+        filter_layout.addWidget(QLabel("Driver name"), 0, 0)
+        filter_layout.addWidget(self.name_input, 0, 1)
+        filter_layout.addWidget(QLabel("Area"), 1, 0)
+        filter_layout.addWidget(self.area_combo, 1, 1)
+        filter_layout.addWidget(QLabel("Min rating"), 2, 0)
+        filter_layout.addWidget(self.min_rating_input, 2, 1)
+        filter_layout.addWidget(QLabel("Sort by"), 3, 0)
+        filter_layout.addWidget(self.sort_combo, 3, 1)
 
         self.refresh_btn = QPushButton("Search")
         self.refresh_btn.clicked.connect(self.refresh)
-        filter_layout.addWidget(self.refresh_btn, 3, 0, 1, 2)
+        filter_layout.addWidget(self.refresh_btn, 4, 0, 1, 2)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Name", "Area", "Rating", "Vehicle", "Trips/week"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table = QTableWidget(0, 4)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self._set_table_headers()
 
         layout.addWidget(filter_box)
         layout.addWidget(self.table)
+        self._show_placeholder("Use the filters above to search for drivers.")
 
     def refresh(self) -> None:
         try:
             response = self.api.fetch_drivers(
                 min_rating=self.min_rating_input.value() or None,
-                area=self.area_input.text().strip() or None,
+                area=self.area_combo.currentData(),
+                name=self.name_input.text().strip() or None,
                 sort=self.sort_combo.currentText(),
             )
         except ServerAPIError as exc:
@@ -839,18 +1036,77 @@ class SearchDriverPage(QWidget):
         def ro(text: str) -> QTableWidgetItem:
             it = QTableWidgetItem(text)
             it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             return it
 
-        items = response["items"]
+        items = response.get("items") or response.get("drivers") or []
+        if not items:
+            self._show_placeholder("No drivers matched your filters.")
+            return
         self.table.setRowCount(len(items))
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Name", "Area", "Rating", "Vehicle", "Trips/week"])
+        self.table.setColumnCount(4)
+        self._set_table_headers()
         for row, driver in enumerate(items):
-            self.table.setItem(row, 0, ro(driver["name"]))
-            self.table.setItem(row, 1, ro(driver["area"]))
-            self.table.setItem(row, 2, ro(str(driver["rating"])))
-            self.table.setItem(row, 3, ro(driver["vehicle"]))
-            self.table.setItem(row, 4, ro(str(driver["trips_per_week"])))
+            rating_value = driver.get("rating")
+            if rating_value is None:
+                rating_value = driver.get("avg_rating_driver", 0)
+            try:
+                rating_display = f"{float(rating_value):.1f}"
+            except (TypeError, ValueError):
+                rating_display = str(rating_value)
+            name_item = ro(driver.get("name") or driver.get("username") or "Unknown")
+            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 0, name_item)
+
+            area_item = ro(driver.get("area") or "-")
+            area_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 1, area_item)
+
+            rating_item = ro(rating_display)
+            rating_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 2, rating_item)
+            btn = QPushButton("Request ride")
+            btn.setObjectName("driverRequestBtn")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(DRIVER_ROW_BUTTON_STYLE)
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            btn.setFixedWidth(130)
+            btn.clicked.connect(lambda _=False, d=driver: self._handle_request_driver(d))
+            button_container = QWidget()
+            btn_layout = QHBoxLayout(button_container)
+            btn_layout.setContentsMargins(0, 0, 0, 0)
+            btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            btn_layout.addWidget(btn)
+            self.table.setCellWidget(row, 3, button_container)
+
+    def reset_results(self) -> None:
+        self._show_placeholder("Use the filters above to search for drivers.")
+
+    def _show_placeholder(self, message: str) -> None:
+        self.table.setRowCount(0)
+        self.table.setColumnCount(1)
+        self.table.setHorizontalHeaderLabels(["Info"])
+        self.table.insertRow(0)
+        msg = QTableWidgetItem(message)
+        msg.setFlags(msg.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.table.setItem(0, 0, msg)
+
+    def set_request_handler(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        self.request_driver_callback = callback
+
+    def _handle_request_driver(self, driver: Dict[str, Any]) -> None:
+        if self.request_driver_callback:
+            self.request_driver_callback(driver)
+
+    def _set_table_headers(self) -> None:
+        labels = ["Name", "Area", "Rating", "Actions"]
+        self.table.setHorizontalHeaderLabels(labels)
+        header = self.table.horizontalHeader()
+        for i in range(len(labels)):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
+            item = self.table.horizontalHeaderItem(i)
+            if item:
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
 
 # Chats ------------------------------------------------------------------------
@@ -1653,6 +1909,8 @@ class MainWindow(QMainWindow):
         ]:
             self.stack.addWidget(page)
 
+        self.search_page.set_request_handler(self._prefill_request_from_driver)
+
         # bottom nav
         self.bottom_nav = QFrame()
         self.bottom_nav.setObjectName("bottomNav")
@@ -1708,12 +1966,13 @@ class MainWindow(QMainWindow):
         self.user = user
         self.profile_page.load_user(user)
         self.schedule_page.load_from_user(user)  # hydrate schedule
+        self.request_page.set_user_context(user)
         self._update_logged_in_banner()
         self.apply_theme(user.get("theme", self.theme))
 
         self.bottom_nav.setVisible(True)
         self.dashboard_page.refresh()
-        self.search_page.refresh()
+        self.search_page.reset_results()
         self.chats_page.refresh()
         self.trips_page.refresh()
 
@@ -1740,6 +1999,13 @@ class MainWindow(QMainWindow):
     def _open_profile(self) -> None:
         self.stack.setCurrentWidget(self.profile_page)
 
+    def _prefill_request_from_driver(self, driver: Dict[str, Any]) -> None:
+        self.request_page.prefill_for_driver(driver)
+        for idx, (_, page) in enumerate(self._tabs):
+            if page is self.request_page:
+                self._switch_tab(idx)
+                break
+
     def _handle_logout(self) -> None:
         if not self.user:
             self.stack.setCurrentWidget(self.auth_page)
@@ -1761,6 +2027,7 @@ class MainWindow(QMainWindow):
         self.user = None
         self.profile_page.load_user({})
         self.schedule_page.load_from_user({})
+        self.request_page.clear_user_context()
         for button in self._tab_buttons:
             button.setChecked(False)
         self.bottom_nav.setVisible(False)

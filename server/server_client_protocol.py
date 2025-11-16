@@ -26,6 +26,8 @@ class client_request_type(enum.IntEnum):
     UPDATE_PROFILE = 10
     FETCH_PROFILE = 11
     LOOKUP_AREA = 12
+    FETCH_DRIVERS = 14
+    AUTOMATED_RIDE_REQUEST = 15
 
 
 @dataclass(frozen=True)

@@ -20,7 +20,9 @@ from server.handlers import (
     handle_update_profile,
     handle_fetch_profile,
     handle_lookup_area,
+    get_drivers_with_filters,
 )
+from server.request_handlers import automated_request
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -88,6 +90,10 @@ def dispatch_request(
             response = handle_fetch_profile(request.payload)
         case client_request_type.LOOKUP_AREA:
             response = handle_lookup_area(request.payload)
+        case client_request_type.FETCH_DRIVERS:
+            response = get_drivers_with_filters(request.payload)
+        case client_request_type.AUTOMATED_RIDE_REQUEST:
+            response = automated_request(request.payload)
         case _:
             response = make_server_error_response(
                 f"Unsupported request type: {request.type!r}"

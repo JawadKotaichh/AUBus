@@ -25,6 +25,8 @@ _ACTION_TO_REQUEST_TYPE = {
     "update_profile": 10,  # client_request_type.UPDATE_PROFILE
     "fetch_profile": 11,  # client_request_type.FETCH_PROFILE
     "lookup_area": 12,  # client_request_type.LOOKUP_AREA
+    "drivers": 14,  # client_request_type.FETCH_DRIVERS
+    "automated_request": 15,  # client_request_type.AUTOMATED_RIDE_REQUEST
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
@@ -162,18 +164,26 @@ class ServerAPI:
         page_size: int = 20,
         min_rating: Optional[float] = None,
         area: Optional[str] = None,
+        name: Optional[str] = None,
         sort: str = "rating",
     ) -> Dict[str, Any]:
-        return self._send_request(
-            "drivers",
-            {
-                "page": page,
-                "page_size": page_size,
-                "min_rating": min_rating,
-                "area": area,
-                "sort": sort,
-            },
-        )
+        payload: Dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+            "sort": sort,
+            "limit": page_size,
+            "requested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "directory": True,
+        }
+        if min_rating is not None:
+            payload["min_rating"] = float(min_rating)
+            payload["min_avg_rating"] = float(min_rating)
+        if area:
+            payload["area"] = area
+            payload["zone"] = area
+        if name:
+            payload["name"] = name
+        return self._send_request("drivers", payload)
 
     def request_ride(
         self, *, departure: str, destination: str, when: str
@@ -188,6 +198,23 @@ class ServerAPI:
 
     def cancel_ride(self, request_id: str) -> Dict[str, Any]:
         return self._send_request("cancel_ride", {"request_id": request_id})
+
+    def automated_request(
+        self,
+        *,
+        rider_session_id: str,
+        rider_location: bool | str | int,
+        min_avg_rating: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if not rider_session_id:
+            raise ServerAPIError("rider_session_id is required for automated requests.")
+        payload: Dict[str, Any] = {
+            "rider_session_id": rider_session_id,
+            "rider_location": rider_location,
+        }
+        if min_avg_rating is not None:
+            payload["min_avg_rating"] = float(min_avg_rating)
+        return self._send_request("automated_request", payload)
 
     def fetch_trips(
         self, *, filters: Optional[Dict[str, Any]] = None
@@ -394,6 +421,15 @@ class MockServerAPI(ServerAPI):
                     "trips_per_week": 6,
                     "bio": "Prefers requests before 7 AM.",
                 },
+                {
+                    "id": "drv-102",
+                    "name": "Ali H.",
+                    "area": "Baabda",
+                    "rating": 4.5,
+                    "vehicle": "Kia Picanto 2019",
+                    "trips_per_week": 5,
+                    "bio": "Usually leaves Baabda at 7:30 toward AUB.",
+                },
             ],
             rides=[
                 {
@@ -532,16 +568,63 @@ class MockServerAPI(ServerAPI):
         drivers = self.db.drivers
         min_rating = payload.get("min_rating")
         area = payload.get("area")
+        name_filter = (payload.get("name") or "").strip().lower()
         if min_rating:
             drivers = [d for d in drivers if d["rating"] >= min_rating]
         if area:
             drivers = [d for d in drivers if d["area"].lower() == area.lower()]
+        if name_filter:
+            drivers = [
+                d
+                for d in drivers
+                if name_filter in d["name"].lower()
+                or name_filter in d.get("username", "").lower()
+            ]
         sort = payload.get("sort") or "rating"
         reverse = sort == "rating"
         drivers = sorted(
             drivers, key=lambda d: d.get(sort) or d["name"], reverse=reverse
         )
+        limit = payload.get("limit")
+        try:
+            limit_value = int(limit) if limit is not None else None
+        except (TypeError, ValueError):
+            limit_value = None
+        if limit_value and limit_value > 0:
+            drivers = drivers[:limit_value]
         return {"items": drivers, "page": payload.get("page", 1), "total": len(drivers)}
+
+    def _handle_automated_request(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
+        rider_location = payload.get("rider_location")
+        at_aub = bool(rider_location) if isinstance(rider_location, bool) else str(
+            rider_location
+        ).lower() in {"1", "true", "aub", "campus", "to_aub"}
+        top_drivers = self.db.drivers[:3]
+        drivers = []
+        for idx, driver in enumerate(top_drivers, start=1):
+            drivers.append(
+                {
+                    "driver_id": driver.get("id"),
+                    "username": driver.get("name") or driver.get("id"),
+                    "distance_km": round(0.8 * idx, 2),
+                    "duration_min": 5 * idx,
+                    "area": driver.get("area"),
+                }
+            )
+        return {
+            "rider_id": self._user.get("user_id"),
+            "session_id": payload.get("rider_session_id", "mock-session"),
+            "min_avg_rating": payload.get("min_avg_rating") or 0.0,
+            "rider_location": {
+                "at_aub": at_aub,
+                "area": "AUB Campus" if at_aub else self._user.get("area"),
+            },
+            "drivers": drivers,
+            "message": (
+                "No drivers available right now." if not drivers else "Mock drivers loaded."
+            ),
+        }
 
     def _handle_request_ride(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
@@ -734,3 +817,60 @@ class AuthBackendServerAPI(MockServerAPI):
 
     def lookup_area(self, query: str, *, limit: int = 5) -> List[Dict[str, Any]]:
         return self._backend.lookup_area(query, limit=limit)
+
+    def fetch_drivers(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        min_rating: Optional[float] = None,
+        area: Optional[str] = None,
+        name: Optional[str] = None,
+        sort: str = "rating",
+    ) -> Dict[str, Any]:
+        try:
+            return self._backend.fetch_drivers(
+                page=page,
+                page_size=page_size,
+                min_rating=min_rating,
+                area=area,
+                name=name,
+                sort=sort,
+            )
+        except ServerAPIError as exc:
+            logger.warning(
+                "Live backend fetch_drivers failed (%s). Falling back to mock data.",
+                exc,
+            )
+            return super().fetch_drivers(
+                page=page,
+                page_size=page_size,
+                min_rating=min_rating,
+                area=area,
+                name=name,
+                sort=sort,
+            )
+
+    def automated_request(
+        self,
+        *,
+        rider_session_id: str,
+        rider_location: bool | str | int,
+        min_avg_rating: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        try:
+            return self._backend.automated_request(
+                rider_session_id=rider_session_id,
+                rider_location=rider_location,
+                min_avg_rating=min_avg_rating,
+            )
+        except ServerAPIError as exc:
+            logger.warning(
+                "Live backend automated_request failed (%s). Falling back to mock data.",
+                exc,
+            )
+            return super().automated_request(
+                rider_session_id=rider_session_id,
+                rider_location=rider_location,
+                min_avg_rating=min_avg_rating,
+            )
