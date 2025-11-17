@@ -1088,7 +1088,6 @@ def get_user_profile(user_id: int) -> DBResponse:
             status=db_msg_status.INVALID_INPUT,
             payload=_payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
         )
-
 def fetch_online_drivers(
     *,
     min_avg_rating: Optional[float] = None,
@@ -1102,6 +1101,7 @@ def fetch_online_drivers(
 ) -> DBResponse:
     """Return drivers that are online and available for the requested moment.
     Optional filters: min_avg_rating, zone, username (partial/CI), name (partial/CI).
+    If zone=None, returns all online drivers regardless of area.
     """
     if limit is not None and limit <= 0:
         return DBResponse(
@@ -1109,6 +1109,7 @@ def fetch_online_drivers(
             db_msg_status.INVALID_INPUT,
             _payload_from_status(db_msg_status.INVALID_INPUT, "limit must be > 0"),
         )
+
     try:
         request_dt = _ensure_datetime(requested_at)
     except ValueError as exc:
@@ -1127,10 +1128,8 @@ def fetch_online_drivers(
                 db_msg_status.INVALID_INPUT,
                 _payload_from_status(
                     db_msg_status.INVALID_INPUT,
-                    "Unknown zone '{}'. Supported zones: {}".format(
-                        zone,
-                        ", ".join(sorted(z.name for z in ZONE_BOUNDARIES.values())),
-                    ),
+                    f"Unknown zone '{zone}'. Supported zones: "
+                    + ", ".join(sorted(z.name for z in ZONE_BOUNDARIES.values())),
                 ),
             )
 
@@ -1143,6 +1142,7 @@ def fetch_online_drivers(
                 db_msg_status.INVALID_INPUT, f"Unsupported day name: {day_key}"
             ),
         )
+
     dep_col, ret_col = DAY_TO_COLS[day_key]
     sql = f"""
         SELECT
@@ -1156,9 +1156,9 @@ def fetch_online_drivers(
             u.avg_rating_rider,
             u.number_of_rides_driver,
             us.last_seen AS last_seen,
-        s.{dep_col} AS dep_time,
-        s.{ret_col} AS ret_time,
-        us.session_token AS session_token
+            s.{dep_col} AS dep_time,
+            s.{ret_col} AS ret_time,
+            us.session_token AS session_token
         FROM users AS u
         INNER JOIN user_sessions AS us ON us.user_id = u.id
         LEFT JOIN schedule AS s ON s.id = u.schedule_id
@@ -1178,19 +1178,18 @@ def fetch_online_drivers(
                     f"min_avg_rating must be >= 0, got {min_avg_rating}",
                 ),
             )
-        sql += " AND u.avg_rating_driver >= ?"
+        sql += " AND IFNULL(u.avg_rating_driver, 0) >= ?"
         params.append(float(min_avg_rating))
 
-    # --- New filters: username / name (case-insensitive partial match) ---
-    if username is not None and username.strip():
+    if username and username.strip():
         sql += " AND LOWER(u.username) LIKE LOWER(?)"
         params.append(f"%{username.strip()}%")
 
-    if name is not None and name.strip():
+    if name and name.strip():
         sql += " AND LOWER(u.name) LIKE LOWER(?)"
         params.append(f"%{name.strip()}%")
-    # --------------------------------------------------------------------
 
+    # Only apply zone bounds if a zone is specified
     if zone_boundary:
         sql += " AND u.latitude BETWEEN ? AND ?"
         sql += " AND u.longitude BETWEEN ? AND ?"
@@ -1204,7 +1203,6 @@ def fetch_online_drivers(
         )
 
     sql += " ORDER BY us.last_seen DESC"
-    candidate_limit: Optional[int] = None
     if limit is not None:
         multiplier = candidate_multiplier if candidate_multiplier and candidate_multiplier > 0 else 1
         candidate_limit = max(limit * multiplier, limit)
@@ -1223,8 +1221,8 @@ def fetch_online_drivers(
 
     drivers: List[Dict[str, Any]] = []
     for row in rows:
-        dep_time = row[10]
-        ret_time = row[11]
+        dep_time, ret_time = row[10], row[11]
+        # Skip time window only if enforcement is enabled
         if enforce_schedule_window and not _time_is_within_window(
             request_dt, dep_time, ret_time
         ):
@@ -1248,17 +1246,29 @@ def fetch_online_drivers(
         if limit is not None and len(drivers) >= limit:
             break
 
+    # fallback if schedule/time filtering removed everyone
+    if not drivers and enforce_schedule_window:
+        logger.warning("[fetch_online_drivers] No drivers matched time window — retrying without schedule filter.")
+        return fetch_online_drivers(
+            min_avg_rating=min_avg_rating,
+            zone=zone,
+            requested_at=None,
+            limit=limit,
+            candidate_multiplier=candidate_multiplier,
+            username=username,
+            name=name,
+            enforce_schedule_window=False,
+        )
+
     return DBResponse(
         db_response_type.USER_FOUND,
         db_msg_status.OK,
         _payload_from_status(
             db_msg_status.OK,
-            {
-                "requested_at": request_dt.isoformat(),
-                "drivers": drivers,
-            },
+            {"requested_at": request_dt.isoformat(), "drivers": drivers},
         ),
     )
+
 
 
 ensure_schema_initialized()

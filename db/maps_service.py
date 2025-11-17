@@ -285,7 +285,7 @@ def get_closest_online_drivers(
         from . import user_db  # Local import avoids circular dependency
 
         zone_drivers_response = user_db.fetch_online_drivers(
-            zone=passenger_zone,
+            zone=None,
             min_avg_rating=min_avg,
             limit=10,
             requested_at=requested_at,
