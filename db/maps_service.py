@@ -309,32 +309,43 @@ def get_closest_online_drivers(
 
         #  Compute distances for those drivers only
         driver_distances: List[Dict[str, Any]] = []
+        rider_coords = f"{passenger_lat},{passenger_long}"
         for driver in zone_drivers:
-            driver_id = driver[0]
-            username = driver[1]
-            lat = driver[2]
-            lng = driver[3]
-            destination = f"{lat},{lng}"
+            lat = driver.get("latitude")
+            lng = driver.get("longitude")
+            if lat is None or lng is None:
+                continue
+            origin_coords = f"{lat},{lng}"
 
             try:
                 # Use Google Distance Matrix API
                 distance_km, duration_min, _, _ = get_distance_and_duration(
-                    f"{passenger_lat},{passenger_long}", destination
+                    origin_coords, rider_coords
                 )
                 driver_distances.append(
                     {
-                        "driver_id": driver_id,
-                        "username": username,
+                        "driver_id": driver.get("id"),
+                        "session_token": driver.get("session_token"),
+                        "username": driver.get("username"),
+                        "name": driver.get("name"),
+                        "area": driver.get("area"),
+                        "avg_rating_driver": driver.get("avg_rating_driver"),
+                        "number_of_rides_driver": driver.get("number_of_rides_driver"),
                         "distance_km": distance_km,
                         "duration_min": duration_min,
+                        "latitude": lat,
+                        "longitude": lng,
+                        "maps_url": build_google_maps_link(
+                            origin_coords, rider_coords
+                        ),
                     }
                 )
             except Exception as e:
-                print(f"[WARN] Distance calc failed for driver {driver_id}: {e}")
+                print(f"[WARN] Distance calc failed for driver {driver.get('id')}: {e}")
                 continue
 
         # Sort by distance and limit results
-        driver_distances.sort(key=lambda d: d["distance_km"])
+        driver_distances.sort(key=lambda d: d.get("distance_km") or 0.0)
 
         if not driver_distances:
             return DBResponse(

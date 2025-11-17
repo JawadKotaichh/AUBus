@@ -27,6 +27,11 @@ _ACTION_TO_REQUEST_TYPE = {
     "lookup_area": 12,  # client_request_type.LOOKUP_AREA
     "drivers": 14,  # client_request_type.FETCH_DRIVERS
     "automated_request": 15,  # client_request_type.AUTOMATED_RIDE_REQUEST
+    "driver_requests": 16,
+    "driver_request_decision": 17,
+    "ride_request_status": 18,
+    "confirm_ride_request": 19,
+    "cancel_ride_request": 20,
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
@@ -222,6 +227,61 @@ class ServerAPI:
             payload["pickup_time"] = pickup_time
         return self._send_request("automated_request", payload)
 
+    def fetch_driver_requests(self, *, driver_session_id: str) -> Dict[str, Any]:
+        if not driver_session_id:
+            raise ServerAPIError("driver_session_id is required.")
+        return self._send_request(
+            "driver_requests", {"driver_session_id": driver_session_id}
+        )
+
+    def driver_request_decision(
+        self,
+        *,
+        driver_session_id: str,
+        request_id: int,
+        decision: str | bool,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not driver_session_id:
+            raise ServerAPIError("driver_session_id is required.")
+        payload: Dict[str, Any] = {
+            "driver_session_id": driver_session_id,
+            "request_id": request_id,
+            "decision": decision,
+        }
+        if note:
+            payload["note"] = note
+        return self._send_request("driver_request_decision", payload)
+
+    def ride_request_status(self, *, rider_session_id: str) -> Dict[str, Any]:
+        if not rider_session_id:
+            raise ServerAPIError("rider_session_id is required.")
+        return self._send_request(
+            "ride_request_status", {"rider_session_id": rider_session_id}
+        )
+
+    def confirm_ride_request(
+        self, *, rider_session_id: str, request_id: int
+    ) -> Dict[str, Any]:
+        if not rider_session_id:
+            raise ServerAPIError("rider_session_id is required.")
+        payload = {"rider_session_id": rider_session_id, "request_id": request_id}
+        return self._send_request("confirm_ride_request", payload)
+
+    def cancel_ride_request(
+        self,
+        *,
+        rider_session_id: str,
+        request_id: int,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not rider_session_id:
+            raise ServerAPIError("rider_session_id is required.")
+        payload: Dict[str, Any] = {"rider_session_id": rider_session_id, "request_id": request_id}
+        if reason:
+            payload["reason"] = reason
+        return self._send_request("cancel_ride_request", payload)
+
     def fetch_trips(
         self, *, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
@@ -395,6 +455,7 @@ class MockDatabase:
     rides: List[Dict[str, Any]] = field(default_factory=list)
     chats: List[Dict[str, Any]] = field(default_factory=list)
     trips: List[Dict[str, Any]] = field(default_factory=list)
+    ride_requests: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class MockServerAPI(ServerAPI):
@@ -506,6 +567,7 @@ class MockServerAPI(ServerAPI):
             "notifications": True,
         }
         self._logged_in: bool = False  # 🔒 gate everything until login
+        self._request_counter: int = 0
 
     # --- auth helpers -----------------------------------------------------------
     def _require_login(self) -> None:
@@ -613,19 +675,10 @@ class MockServerAPI(ServerAPI):
             rider_location
         ).lower() in {"1", "true", "aub", "campus", "to_aub"}
         requested_time = payload.get("pickup_time") or _ts_offset(30)
-        request_id = f"auto-{len(self.db.rides) + 100}"
+        self._request_counter += 1
+        request_id = f"auto-{self._request_counter:04d}"
         origin = "AUB Campus" if at_aub else (self._user.get("area") or "Home")
         destination = (self._user.get("area") or "Home") if at_aub else "AUB Campus"
-        self.db.rides.insert(
-            0,
-            {
-                "id": request_id,
-                "from": origin,
-                "to": destination,
-                "time": requested_time,
-                "status": "matching",
-            },
-        )
         top_drivers = self.db.drivers[:3]
         drivers = []
         for idx, driver in enumerate(top_drivers, start=1):
@@ -633,11 +686,35 @@ class MockServerAPI(ServerAPI):
                 {
                     "driver_id": driver.get("id"),
                     "username": driver.get("name") or driver.get("id"),
+                    "name": driver.get("name"),
+                    "session_token": f"mock-driver-{driver.get('id')}",
                     "distance_km": round(0.8 * idx, 2),
                     "duration_min": 5 * idx,
                     "area": driver.get("area"),
+                    "avg_rating_driver": driver.get("rating", 4.5),
                 }
             )
+        status = "DRIVER_PENDING" if drivers else "EXHAUSTED"
+        message = (
+            "Mock drivers loaded." if drivers else "No drivers available right now."
+        )
+        request_entry = {
+            "request_id": request_id,
+            "status": status,
+            "drivers_total": len(drivers),
+            "current_driver": drivers[0] if drivers else None,
+            "drivers": drivers,
+            "pickup_time": requested_time,
+            "message": message,
+            "rider": {
+                "user_id": self._user.get("user_id"),
+                "name": self._user.get("name") or self._user.get("username"),
+                "username": self._user.get("username"),
+            },
+            "origin": origin,
+            "destination": destination,
+        }
+        self.db.ride_requests.insert(0, request_entry)
         return {
             "rider_id": self._user.get("user_id"),
             "session_id": payload.get("rider_session_id", "mock-session"),
@@ -648,10 +725,13 @@ class MockServerAPI(ServerAPI):
             },
             "pickup_time": requested_time,
             "request_id": request_id,
+            "status": status,
+            "drivers_total": len(drivers),
+            "current_driver": request_entry["current_driver"],
             "drivers": drivers,
-            "message": (
-                "No drivers available right now." if not drivers else "Mock drivers loaded."
-            ),
+            "message": message,
+            "pickup_area": origin,
+            "destination": destination,
         }
 
     def _handle_request_ride(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -703,6 +783,106 @@ class MockServerAPI(ServerAPI):
             raise ServerAPIError("Chat not found")
         chat["messages"].append({"sender": "me", "body": payload["body"]})
         return {"status": "sent"}
+
+    # --- request workflow API ---------------------------------------------------
+    def fetch_driver_requests(self, *, driver_session_id: str) -> Dict[str, Any]:
+        self._require_login()
+        pending: List[Dict[str, Any]] = []
+        active: List[Dict[str, Any]] = []
+        for request in self.db.ride_requests:
+            entry = {
+                "request_id": request["request_id"],
+                "rider_name": request["rider"]["name"],
+                "rider_username": request["rider"]["username"],
+                "pickup_area": request.get("origin"),
+                "destination": request.get("destination"),
+                "requested_time": request.get("pickup_time"),
+                "duration_min": (request.get("current_driver") or {}).get(
+                    "duration_min"
+                ),
+                "distance_km": (request.get("current_driver") or {}).get(
+                    "distance_km"
+                ),
+                "message": request.get("message"),
+                "status": request["status"],
+            }
+            if request["status"] == "DRIVER_PENDING":
+                pending.append(entry)
+            elif request["status"] in {"AWAITING_RIDER", "COMPLETED"}:
+                active.append(entry)
+        return {"pending": pending, "active": active}
+
+    def _mock_request_by_id(self, request_id: str) -> Optional[Dict[str, Any]]:
+        return next(
+            (req for req in self.db.ride_requests if req["request_id"] == request_id),
+            None,
+        )
+
+    def driver_request_decision(
+        self,
+        *,
+        driver_session_id: str,
+        request_id: int,
+        decision: str | bool,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._require_login()
+        request = self._mock_request_by_id(str(request_id))
+        if not request:
+            raise ServerAPIError("Ride request not found.")
+        accepted = (
+            decision
+            if isinstance(decision, bool)
+            else str(decision).strip().lower() in {"accept", "accepted", "true", "1"}
+        )
+        request["message"] = note or request.get("message")
+        request["status"] = "AWAITING_RIDER" if accepted else "EXHAUSTED"
+        return {
+            "request_id": request_id,
+            "status": request["status"],
+            "current_driver": request.get("current_driver"),
+        }
+
+    def ride_request_status(self, *, rider_session_id: str) -> Dict[str, Any]:
+        self._require_login()
+        if not self.db.ride_requests:
+            return {"request": None, "message": "No ride requests yet."}
+        return self.db.ride_requests[0]
+
+    def confirm_ride_request(
+        self, *, rider_session_id: str, request_id: int
+    ) -> Dict[str, Any]:
+        self._require_login()
+        request = self._mock_request_by_id(str(request_id))
+        if not request:
+            raise ServerAPIError("Ride request not found.")
+        request["status"] = "COMPLETED"
+        ride_id = f"ride-{len(self.db.rides) + 100}"
+        self.db.rides.append(
+            {"id": ride_id, "from": request["origin"], "to": request["destination"], "time": request["pickup_time"], "status": "accepted"}
+        )
+        return {
+            "request_id": request_id,
+            "ride_id": ride_id,
+            "driver": request.get("current_driver"),
+            "driver_id": (request.get("current_driver") or {}).get("driver_id"),
+            "maps": {"distance_km": 1.2, "duration_min": 5, "maps_url": "https://maps.google.com"},
+        }
+
+    def cancel_ride_request(
+        self,
+        *,
+        rider_session_id: str,
+        request_id: int,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self._require_login()
+        request = self._mock_request_by_id(str(request_id))
+        if not request:
+            raise ServerAPIError("Ride request not found.")
+        request["status"] = "CANCELED"
+        request["message"] = reason or request.get("message")
+        return {"request_id": request_id, "status": "CANCELED"}
 
     def _handle_update_profile(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
@@ -858,28 +1038,14 @@ class AuthBackendServerAPI(MockServerAPI):
         name: Optional[str] = None,
         sort: str = "rating",
     ) -> Dict[str, Any]:
-        try:
-            return self._backend.fetch_drivers(
-                page=page,
-                page_size=page_size,
-                min_rating=min_rating,
-                area=area,
-                name=name,
-                sort=sort,
-            )
-        except ServerAPIError as exc:
-            logger.warning(
-                "Live backend fetch_drivers failed (%s). Falling back to mock data.",
-                exc,
-            )
-            return super().fetch_drivers(
-                page=page,
-                page_size=page_size,
-                min_rating=min_rating,
-                area=area,
-                name=name,
-                sort=sort,
-            )
+        return self._backend.fetch_drivers(
+            page=page,
+            page_size=page_size,
+            min_rating=min_rating,
+            area=area,
+            name=name,
+            sort=sort,
+        )
 
     def automated_request(
         self,
@@ -889,21 +1055,52 @@ class AuthBackendServerAPI(MockServerAPI):
         min_avg_rating: Optional[float] = None,
         pickup_time: Optional[str] = None,
     ) -> Dict[str, Any]:
-        try:
-            return self._backend.automated_request(
-                rider_session_id=rider_session_id,
-                rider_location=rider_location,
-                min_avg_rating=min_avg_rating,
-                pickup_time=pickup_time,
-            )
-        except ServerAPIError as exc:
-            logger.warning(
-                "Live backend automated_request failed (%s). Falling back to mock data.",
-                exc,
-            )
-            return super().automated_request(
-                rider_session_id=rider_session_id,
-                rider_location=rider_location,
-                min_avg_rating=min_avg_rating,
-                pickup_time=pickup_time,
-            )
+        return self._backend.automated_request(
+            rider_session_id=rider_session_id,
+            rider_location=rider_location,
+            min_avg_rating=min_avg_rating,
+            pickup_time=pickup_time,
+        )
+
+    def fetch_driver_requests(self, *, driver_session_id: str) -> Dict[str, Any]:
+        return self._backend.fetch_driver_requests(
+            driver_session_id=driver_session_id
+        )
+
+    def driver_request_decision(
+        self,
+        *,
+        driver_session_id: str,
+        request_id: int,
+        decision: str | bool,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._backend.driver_request_decision(
+            driver_session_id=driver_session_id,
+            request_id=request_id,
+            decision=decision,
+            note=note,
+        )
+
+    def ride_request_status(self, *, rider_session_id: str) -> Dict[str, Any]:
+        return self._backend.ride_request_status(
+            rider_session_id=rider_session_id
+        )
+
+    def confirm_ride_request(
+        self, *, rider_session_id: str, request_id: int
+    ) -> Dict[str, Any]:
+        return self._backend.confirm_ride_request(
+            rider_session_id=rider_session_id, request_id=request_id
+        )
+
+    def cancel_ride_request(
+        self,
+        *,
+        rider_session_id: str,
+        request_id: int,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._backend.cancel_ride_request(
+            rider_session_id=rider_session_id, request_id=request_id, reason=reason
+        )

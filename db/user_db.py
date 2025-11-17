@@ -21,6 +21,7 @@ from .schedules import (
     init_schema_schedule,
 )
 from .ride import init_ride_schema
+from .ride_requests import init_ride_request_schema
 from .user_sessions import init_user_sessions_schema
 from .maps_service import geocode_address
 from .zones import ZONE_BOUNDARIES, ZoneBoundary, get_zone_by_name
@@ -38,6 +39,8 @@ _REQUIRED_SCHEMA_TABLES: Tuple[str, ...] = (
     "schedule",
     "rides",
     "user_sessions",
+    "ride_requests",
+    "ride_request_candidates",
 )
 
 _SCHEMA_INIT_LOCK = threading.Lock()
@@ -350,6 +353,7 @@ def creating_initial_db() -> DBResponse:
         init_schema_schedule()
         init_ride_schema()
         init_user_sessions_schema()
+        init_ride_request_schema()
         db.commit()
         logger.info("DB schema created successfully at %s", db_path)
         return DBResponse(
@@ -1152,8 +1156,9 @@ def fetch_online_drivers(
             u.avg_rating_rider,
             u.number_of_rides_driver,
             us.last_seen AS last_seen,
-            s.{dep_col} AS dep_time,
-            s.{ret_col} AS ret_time
+        s.{dep_col} AS dep_time,
+        s.{ret_col} AS ret_time,
+        us.session_token AS session_token
         FROM users AS u
         INNER JOIN user_sessions AS us ON us.user_id = u.id
         LEFT JOIN schedule AS s ON s.id = u.schedule_id
@@ -1236,6 +1241,7 @@ def fetch_online_drivers(
                 "avg_rating_rider": float(row[7]) if row[7] is not None else 0.0,
                 "number_of_rides_driver": int(row[8] or 0),
                 "last_seen": row[9],
+                "session_token": row[12],
                 "schedule_window": {"start": dep_time, "end": ret_time},
             }
         )

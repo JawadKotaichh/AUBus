@@ -22,7 +22,14 @@ from server.handlers import (
     handle_lookup_area,
     get_drivers_with_filters,
 )
-from server.request_handlers import automated_request
+from server.request_handlers import (
+    automated_request,
+    handle_driver_request_decision,
+    handle_driver_request_queue,
+    handle_rider_confirm_request,
+    handle_rider_request_status,
+    handle_cancel_match_request,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -94,6 +101,16 @@ def dispatch_request(
             response = get_drivers_with_filters(request.payload)
         case client_request_type.AUTOMATED_RIDE_REQUEST:
             response = automated_request(request.payload)
+        case client_request_type.FETCH_DRIVER_REQUESTS:
+            response = handle_driver_request_queue(request_payload)
+        case client_request_type.DRIVER_REQUEST_DECISION:
+            response = handle_driver_request_decision(request_payload)
+        case client_request_type.FETCH_RIDE_REQUEST_STATUS:
+            response = handle_rider_request_status(request_payload)
+        case client_request_type.CONFIRM_RIDE_REQUEST:
+            response = handle_rider_confirm_request(request_payload)
+        case client_request_type.CANCEL_RIDE_REQUEST:
+            response = handle_cancel_match_request(request_payload)
         case _:
             response = make_server_error_response(
                 f"Unsupported request type: {request.type!r}"

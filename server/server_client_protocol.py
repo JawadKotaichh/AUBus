@@ -28,6 +28,11 @@ class client_request_type(enum.IntEnum):
     LOOKUP_AREA = 12
     FETCH_DRIVERS = 14
     AUTOMATED_RIDE_REQUEST = 15
+    FETCH_DRIVER_REQUESTS = 16
+    DRIVER_REQUEST_DECISION = 17
+    FETCH_RIDE_REQUEST_STATUS = 18
+    CONFIRM_RIDE_REQUEST = 19
+    CANCEL_RIDE_REQUEST = 20
 
 
 @dataclass(frozen=True)

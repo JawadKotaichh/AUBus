@@ -18,6 +18,16 @@ from db.user_db import (
 from server.utils import _error_server, _ok_server
 from db.maps_service import get_closest_online_drivers, geocode_address
 from db.zones import zone_for_coordinates
+from db.ride_requests import (
+    create_ride_request,
+    get_active_request_for_rider,
+    get_latest_request_for_rider,
+    list_requests_for_driver,
+    record_driver_decision,
+    fetch_request_for_confirmation,
+    mark_request_completed,
+    cancel_request as cancel_driver_assignment,
+)
 
 
 def handle_p2p(
@@ -645,19 +655,103 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
                 "No drivers matched the requested time. Showing nearby drivers instead."
             )
 
-    if drivers:
-        drivers = drivers[:_AUTOMATED_DRIVER_LIMIT]
+    drivers = drivers[:_AUTOMATED_DRIVER_LIMIT]
 
-    message = (
-        "No online drivers matched the current filters."
-        if not drivers
-        else schedule_notice
+    if not drivers:
+        message = (
+            schedule_notice
+            or "No online drivers matched the current filters."
+        )
+        response_payload = {
+            "rider_id": rider_id,
+            "session_id": session_id,
+            "min_avg_rating": min_avg_rating,
+            "rider_location": {
+                "area": passenger_area,
+                "zone": passenger_zone,
+                "latitude": passenger_lat,
+                "longitude": passenger_long,
+                "at_aub": is_at_aub,
+            },
+            "drivers": [],
+        }
+        if pickup_time_iso:
+            response_payload["pickup_time"] = pickup_time_iso
+        response_payload["message"] = message
+        return _ok_server(
+            payload=response_payload, resp_type=server_response_type.USER_FOUND
+        )
+
+    rider_profile_response = get_user_profile(rider_id)
+    if rider_profile_response.status != db_msg_status.OK:
+        err = (
+            rider_profile_response.payload.get("error")
+            if rider_profile_response.payload
+            else "Unable to fetch rider profile."
+        )
+        return _error_server(f"Unable to start ride request: {err}")
+    rider_profile = rider_profile_response.payload["output"]
+
+    active_request_response = get_active_request_for_rider(rider_id)
+    if active_request_response.status == db_msg_status.OK:
+        return _error_server(
+            "You already have an active ride request. Please wait for it to finish."
+        )
+    if active_request_response.status not in {
+        db_msg_status.OK,
+        db_msg_status.NOT_FOUND,
+    }:
+        err = (
+            active_request_response.payload.get("error")
+            if active_request_response.payload
+            else "Unable to verify existing ride requests."
+        )
+        return _error_server(err)
+
+    pickup_display = passenger_area or rider_profile.get("area") or "AUB Campus"
+    destination_is_aub = not is_at_aub
+    destination_label = (
+        _AUB_REFERENCE_ADDRESS
+        if destination_is_aub
+        else (rider_profile.get("area") or pickup_display)
     )
+    requested_time_value = pickup_time_iso or datetime.utcnow().isoformat()
 
+    creation_response = create_ride_request(
+        rider_id=rider_id,
+        rider_session_id=session_id,
+        pickup_area=pickup_display,
+        pickup_lat=passenger_lat,
+        pickup_lng=passenger_long,
+        destination=destination_label,
+        destination_is_aub=destination_is_aub,
+        requested_time=requested_time_value,
+        min_rating=min_avg_rating,
+        rider_profile=rider_profile,
+        drivers=drivers,
+        schedule_notice=schedule_notice,
+    )
+    if creation_response.status != db_msg_status.OK:
+        err = (
+            creation_response.payload.get("error")
+            if creation_response.payload
+            else "Unknown ride request error."
+        )
+        return _error_server(f"Automatic ride request failed: {err}")
+
+    request_output = creation_response.payload["output"]
+    message = request_output.get("message") or schedule_notice
     response_payload = {
+        "request_id": request_output["request_id"],
+        "status": request_output["status"],
+        "drivers_total": request_output.get("drivers_total"),
+        "current_driver": request_output.get("current_driver"),
         "rider_id": rider_id,
         "session_id": session_id,
         "min_avg_rating": min_avg_rating,
+        "pickup_area": pickup_display,
+        "destination": destination_label,
+        "pickup_time": requested_time_value,
         "rider_location": {
             "area": passenger_area,
             "zone": passenger_zone,
@@ -667,11 +761,297 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
         },
         "drivers": drivers,
     }
-    if pickup_time_iso:
-        response_payload["pickup_time"] = pickup_time_iso
     if message:
         response_payload["message"] = message
 
     return _ok_server(
         payload=response_payload, resp_type=server_response_type.USER_FOUND
+    )
+
+
+def handle_driver_request_queue(payload: Dict[str, Any]) -> ServerResponse:
+    session_id = str(payload.get("driver_session_id") or "").strip()
+    if not session_id:
+        return _error_server("driver_session_id is required.")
+
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+    driver_id = session_response.payload["output"]["user_id"]
+
+    driver_profile = get_user_profile(driver_id)
+    if driver_profile.status != db_msg_status.OK:
+        err = (
+            driver_profile.payload.get("error")
+            if driver_profile.payload
+            else "Unable to fetch driver profile."
+        )
+        return _error_server(err)
+    driver_payload = driver_profile.payload["output"]
+    if not driver_payload.get("is_driver"):
+        return _error_server("Only driver accounts can view incoming requests.")
+
+    queue_response = list_requests_for_driver(driver_id)
+    if queue_response.status != db_msg_status.OK:
+        err = (
+            queue_response.payload.get("error")
+            if queue_response.payload
+            else "Unable to fetch pending ride requests."
+        )
+        return _error_server(err)
+    queue_payload = queue_response.payload["output"]
+    queue_payload["driver_id"] = driver_id
+    return _ok_server(
+        payload=queue_payload, resp_type=server_response_type.USER_FOUND
+    )
+
+
+def handle_driver_request_decision(payload: Dict[str, Any]) -> ServerResponse:
+    required_fields = ["driver_session_id", "request_id", "decision"]
+    missing = [field for field in required_fields if field not in payload]
+    if missing:
+        return _error_server(
+            f"Missing fields for driver decision: {', '.join(missing)}"
+        )
+
+    session_id = str(payload["driver_session_id"]).strip()
+    if not session_id:
+        return _error_server("driver_session_id cannot be empty.")
+    try:
+        request_id = int(payload["request_id"])
+    except (TypeError, ValueError):
+        return _error_server("request_id must be numeric.")
+
+    decision_raw = payload.get("decision")
+    accepted: Optional[bool]
+    if isinstance(decision_raw, bool):
+        accepted = decision_raw
+    elif isinstance(decision_raw, (int, float)):
+        accepted = bool(decision_raw)
+    else:
+        decision_text = str(decision_raw or "").strip().lower()
+        if decision_text in {"accept", "accepted", "yes", "true"}:
+            accepted = True
+        elif decision_text in {"reject", "rejected", "no", "false"}:
+            accepted = False
+        else:
+            accepted = None
+    if accepted is None:
+        return _error_server(
+            "decision must be either 'accept' or 'reject' (or boolean equivalent)."
+        )
+
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+    driver_id = session_response.payload["output"]["user_id"]
+
+    note = str(payload.get("note") or "").strip() or None
+    decision_response = record_driver_decision(
+        request_id=request_id,
+        driver_id=driver_id,
+        accepted=accepted,
+        note=note,
+    )
+    if decision_response.status != db_msg_status.OK:
+        err = (
+            decision_response.payload.get("error")
+            if decision_response.payload
+            else "Unable to store decision."
+        )
+        return _error_server(err)
+    decision_payload = decision_response.payload["output"]
+    decision_payload["driver_id"] = driver_id
+    return _ok_server(
+        payload=decision_payload, resp_type=server_response_type.RIDE_UPDATED
+    )
+
+
+def handle_rider_request_status(payload: Dict[str, Any]) -> ServerResponse:
+    session_id = str(payload.get("rider_session_id") or "").strip()
+    if not session_id:
+        return _error_server("rider_session_id is required.")
+
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+    rider_id = session_response.payload["output"]["user_id"]
+
+    request_response = get_latest_request_for_rider(rider_id)
+    if request_response.status == db_msg_status.NOT_FOUND:
+        message = (
+            request_response.payload.get("error")
+            if request_response.payload
+            else "No ride requests found for this rider."
+        )
+        return _ok_server(
+            payload={"request": None, "message": message},
+            resp_type=server_response_type.RIDE_UPDATED,
+        )
+    if request_response.status != db_msg_status.OK:
+        err = (
+            request_response.payload.get("error")
+            if request_response.payload
+            else "Unable to load ride request."
+        )
+        return _error_server(err)
+    request_payload = request_response.payload["output"]
+    return _ok_server(
+        payload=request_payload, resp_type=server_response_type.RIDE_UPDATED
+    )
+
+
+def handle_rider_confirm_request(payload: Dict[str, Any]) -> ServerResponse:
+    required_fields = ["rider_session_id", "request_id"]
+    missing = [field for field in required_fields if field not in payload]
+    if missing:
+        return _error_server(
+            f"Missing fields for ride confirmation: {', '.join(missing)}"
+        )
+    session_id = str(payload["rider_session_id"]).strip()
+    if not session_id:
+        return _error_server("rider_session_id cannot be empty.")
+    try:
+        request_id = int(payload["request_id"])
+    except (TypeError, ValueError):
+        return _error_server("request_id must be numeric.")
+
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+    rider_id = session_response.payload["output"]["user_id"]
+
+    request_response = fetch_request_for_confirmation(request_id, rider_id)
+    if request_response.status != db_msg_status.OK:
+        err = (
+            request_response.payload.get("error")
+            if request_response.payload
+            else "Ride request cannot be confirmed."
+        )
+        return _error_server(err)
+    confirmation_data = request_response.payload["output"]
+    driver_id = confirmation_data["driver_id"]
+    driver_session_id = confirmation_data.get("driver_session_id")
+    if not driver_session_id:
+        return _error_server(
+            "Driver session is no longer available. Please send a new request."
+        )
+
+    ride_creation_response = create_ride(
+        rider_id=rider_id,
+        rider_session_id=confirmation_data["rider_session_id"],
+        driver_session_id=driver_session_id,
+        driver_id=driver_id,
+        destination_is_aub=confirmation_data["destination_is_aub"],
+        requested_time=confirmation_data["requested_time"],
+    )
+    if ride_creation_response.status != db_msg_status.OK:
+        err = (
+            ride_creation_response.payload.get("error")
+            if ride_creation_response.payload
+            else "Ride creation failed."
+        )
+        return _error_server(err)
+    ride_output = ride_creation_response.payload["output"]
+    ride_id = ride_output.get("session_id")
+    if ride_id is None:
+        return _error_server("Ride creation did not return a ride_id.")
+
+    try:
+        maps_info = compute_driver_to_rider_info(driver_id, rider_id)
+    except Exception as exc:
+        maps_info = {"error": str(exc)}
+
+    completion_response = mark_request_completed(
+        request_id,
+        ride_id=ride_id,
+        message="Ride confirmed.",
+        maps_url=maps_info.get("maps_url")
+        if isinstance(maps_info, dict)
+        else None,
+    )
+    if completion_response.status != db_msg_status.OK:
+        err = (
+            completion_response.payload.get("error")
+            if completion_response.payload
+            else "Failed to finalize ride request."
+        )
+        return _error_server(err)
+
+    driver_profile_response = get_user_profile(driver_id)
+    driver_profile = (
+        driver_profile_response.payload["output"]
+        if driver_profile_response.status == db_msg_status.OK
+        else {"user_id": driver_id}
+    )
+
+    response_payload = {
+        "request_id": request_id,
+        "ride_id": ride_id,
+        "driver_id": driver_id,
+        "driver": driver_profile,
+        "maps": maps_info,
+    }
+    return _ok_server(
+        payload=response_payload, resp_type=server_response_type.RIDE_CREATED
+    )
+
+
+def handle_cancel_match_request(payload: Dict[str, Any]) -> ServerResponse:
+    required_fields = ["rider_session_id", "request_id"]
+    missing = [field for field in required_fields if field not in payload]
+    if missing:
+        return _error_server(
+            f"Missing fields for canceling request: {', '.join(missing)}"
+        )
+    session_id = str(payload["rider_session_id"]).strip()
+    if not session_id:
+        return _error_server("rider_session_id cannot be empty.")
+    try:
+        request_id = int(payload["request_id"])
+    except (TypeError, ValueError):
+        return _error_server("request_id must be numeric.")
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+    rider_id = session_response.payload["output"]["user_id"]
+
+    cancel_response = cancel_driver_assignment(
+        request_id, rider_id, str(payload.get("reason") or "").strip() or None
+    )
+    if cancel_response.status != db_msg_status.OK:
+        err = (
+            cancel_response.payload.get("error")
+            if cancel_response.payload
+            else "Unable to cancel ride request."
+        )
+        return _error_server(err)
+    return _ok_server(
+        payload=cancel_response.payload["output"],
+        resp_type=server_response_type.RIDE_UPDATED,
     )

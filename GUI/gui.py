@@ -4,7 +4,7 @@ import logging
 import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPointF, QDateTime, QTime, QSize, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPointF, QDateTime, QTime, QSize, QRectF, QUrl
 from PyQt6.QtGui import (
     QIcon,
     QColor,
@@ -14,8 +14,10 @@ from PyQt6.QtGui import (
     QBrush,
     QPainterPath,
     QShowEvent,
+    QDesktopServices,
 )
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -1024,6 +1026,8 @@ class RequestRidePage(QWidget):
         super().__init__()
         self.api = api
         self.session_token: Optional[str] = None
+        self.user_role: str = "passenger"
+        self.active_request_id: Optional[int] = None
         self._last_selected_driver: Optional[Dict[str, Any]] = None
 
         layout = QVBoxLayout(self)
@@ -1069,29 +1073,136 @@ class RequestRidePage(QWidget):
         auto_form.addRow(status_widget)
         auto_form.addRow(self.auto_results)
 
+        self.status_box = QGroupBox("Request status")
+        status_panel = QVBoxLayout(self.status_box)
+        status_panel.setContentsMargins(8, 8, 8, 8)
+        self.status_heading = QLabel("No automated request sent.")
+        self.status_heading.setStyleSheet("font-weight: 600;")
+        self.status_details = QLabel("Use the form below to contact nearby drivers.")
+        self.status_details.setWordWrap(True)
+        button_bar = QHBoxLayout()
+        button_bar.setContentsMargins(0, 0, 0, 0)
+        button_bar.setSpacing(8)
+        self.confirm_btn = QPushButton("Confirm pickup")
+        self.confirm_btn.clicked.connect(self._confirm_active_request)
+        self.cancel_btn = QPushButton("Cancel request")
+        self.cancel_btn.clicked.connect(self._cancel_active_request)
+        button_bar.addWidget(self.confirm_btn)
+        button_bar.addWidget(self.cancel_btn)
+        self.confirm_btn.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        status_panel.addWidget(self.status_heading)
+        status_panel.addWidget(self.status_details)
+        status_panel.addLayout(button_bar)
+
+        self.driver_box = QGroupBox("Incoming ride requests")
+        driver_layout = QVBoxLayout(self.driver_box)
+        driver_layout.setContentsMargins(8, 8, 8, 8)
+        self.pending_list = QListWidget()
+        self.pending_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.pending_list.currentItemChanged.connect(
+            lambda curr, prev: self._show_request_details(curr, allow_map=False)
+        )
+        self.accept_btn = QPushButton("Accept request")
+        self.accept_btn.clicked.connect(self._accept_selected_request)
+        self.reject_btn = QPushButton("Reject request")
+        self.reject_btn.clicked.connect(self._reject_selected_request)
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.accept_btn)
+        action_row.addWidget(self.reject_btn)
+        self.active_list = QListWidget()
+        self.active_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.active_list.currentItemChanged.connect(
+            lambda curr, prev: self._show_request_details(curr, allow_map=True)
+        )
+        driver_layout.addWidget(QLabel("Pending"))
+        driver_layout.addWidget(self.pending_list)
+        driver_layout.addLayout(action_row)
+        self.driver_info_label = QLabel("Select a request to view details.")
+        self.driver_info_label.setWordWrap(True)
+        self.open_map_btn = QPushButton("Open map directions")
+        self.open_map_btn.setVisible(False)
+        self.open_map_btn.clicked.connect(self._open_selected_request_map)
+        driver_layout.addWidget(self.driver_info_label)
+        driver_layout.addWidget(self.open_map_btn)
+        driver_layout.addWidget(QLabel("Active"))
+        driver_layout.addWidget(self.active_list)
+        self.driver_box.setVisible(False)
+
         layout.addWidget(self.auto_box)
+        layout.addWidget(self.status_box)
+        layout.addWidget(self.driver_box)
         layout.addStretch()
         self._update_auto_status("Idle", "No automated request sent.", error=False)
+        self._rider_poll_timer = QTimer(self)
+        self._rider_poll_timer.setInterval(5000)
+        self._rider_poll_timer.setSingleShot(False)
+        self._rider_poll_timer.timeout.connect(self._poll_rider_request_status)
+        self._driver_poll_timer = QTimer(self)
+        self._driver_poll_timer.setInterval(5000)
+        self._driver_poll_timer.setSingleShot(False)
+        self._driver_poll_timer.timeout.connect(self._poll_driver_requests)
 
     def set_user_context(self, user: Dict[str, Any]) -> None:
         self.session_token = user.get("session_token")
+        role_value = (user.get("role") or "").strip().lower()
+        is_driver = role_value == "driver" or bool(user.get("is_driver"))
+        self.user_role = "driver" if is_driver else "passenger"
+        self.auto_box.setVisible(not is_driver)
+        self.driver_box.setVisible(is_driver)
         if not self.session_token:
             self._update_auto_status(
                 "Unavailable",
                 "Active session not available. Please log in.",
                 error=True,
             )
+            self._rider_poll_timer.stop()
+            self._driver_poll_timer.stop()
             return
-        self._update_auto_status(
-            "Ready", "Use the form below to send an automated request.", error=False
-        )
+        if is_driver:
+            self._update_auto_status(
+                "Driver mode", "Listening for requests.", error=False
+            )
+            self.status_heading.setText("Incoming requests")
+            self.status_details.setText("Pending matches will appear below.")
+            self.confirm_btn.setVisible(False)
+            self.cancel_btn.setVisible(False)
+            self._driver_poll_timer.start()
+            self._rider_poll_timer.stop()
+            self._poll_driver_requests()
+        else:
+            self._update_auto_status(
+                "Ready", "Use the form below to send an automated request.", error=False
+            )
+            self.status_heading.setText("No automated request sent.")
+            self.status_details.setText(
+                "Send a request to contact nearby drivers automatically."
+            )
+            self.confirm_btn.setVisible(False)
+            self.cancel_btn.setVisible(False)
+            self._driver_poll_timer.stop()
+            self._rider_poll_timer.start()
+            self._poll_rider_request_status()
 
     def clear_user_context(self) -> None:
         self.session_token = None
+        self.user_role = "passenger"
+        self.active_request_id = None
         self.auto_results.clear()
         self._update_auto_status(
             "Signed out", "Log in to use automated requests.", error=False
         )
+        self.status_heading.setText("Signed out")
+        self.status_details.setText("Log in to view ride requests.")
+        self.confirm_btn.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        self.driver_box.setVisible(False)
+        self._rider_poll_timer.stop()
+        self._driver_poll_timer.stop()
 
     def _run_automated_request(self) -> None:
         if not self.session_token:
@@ -1124,6 +1235,9 @@ class RequestRidePage(QWidget):
             self._update_auto_status("Error", str(exc), error=True)
             self.auto_btn.setEnabled(True)
             return
+        self.active_request_id = response.get("request_id")
+        if self.active_request_id:
+            self._rider_poll_timer.start()
         message = response.get("message") or ""
         raw_drivers = response.get("drivers") or []
         drivers = list(raw_drivers)[:3]
@@ -1135,6 +1249,7 @@ class RequestRidePage(QWidget):
                 message or "No drivers available right now.",
                 error=False,
             )
+            self._render_request_status(None, message or "No active request.")
         else:
             if message:
                 self.auto_results.addItem(message)
@@ -1150,6 +1265,7 @@ class RequestRidePage(QWidget):
                 or f"Alerted top {len(drivers)} drivers. Awaiting confirmations.",
                 error=False,
             )
+            self._render_request_status(response)
         self.auto_btn.setEnabled(True)
 
     def _update_auto_status(self, status: str, message: str, *, error: bool) -> None:
@@ -1158,6 +1274,230 @@ class RequestRidePage(QWidget):
         self.auto_status_heading.setStyleSheet(f"font-weight: 600; color: {color};")
         self.auto_status_message.setText(message)
         self.auto_status_message.setStyleSheet(f"color: {color};")
+
+    def _render_request_status(
+        self, request: Optional[Dict[str, Any]], message: Optional[str] = None
+    ) -> None:
+        if not request:
+            self.status_heading.setText("No active request")
+            self.status_details.setText(
+                message or "Use the form above to notify nearby drivers."
+            )
+            self.confirm_btn.setVisible(False)
+            self.cancel_btn.setVisible(False)
+            self.active_request_id = None
+            return
+        self.active_request_id = request.get("request_id") or self.active_request_id
+        status_text = (request.get("status") or "PENDING").replace("_", " ").title()
+        driver = request.get("current_driver") or request.get("driver")
+        details: List[str] = []
+        if driver:
+            summary = driver.get("name") or driver.get("username") or "Driver"
+            eta = driver.get("duration_min")
+            if eta is not None:
+                summary += f" • {eta} min away"
+            details.append(summary)
+        if message:
+            details.append(message)
+        elif request.get("message"):
+            details.append(str(request.get("message")))
+        self.status_heading.setText(f"Status: {status_text}")
+        self.status_details.setText("\n".join(details) if details else "In progress.")
+        self.cancel_btn.setVisible(True)
+        self.confirm_btn.setVisible(status_text.upper() == "AWAITING RIDER")
+
+    def _poll_rider_request_status(self) -> None:
+        if not self.session_token or self.user_role == "driver":
+            self._rider_poll_timer.stop()
+            return
+        try:
+            response = self.api.ride_request_status(rider_session_id=self.session_token)
+        except ServerAPIError as exc:
+            self.status_details.setText(str(exc))
+            return
+        if isinstance(response, dict) and "request" in response:
+            request = response.get("request")
+            message = response.get("message")
+        else:
+            request = response
+            message = None
+        if not request:
+            self._render_request_status(None, message)
+        else:
+            self._render_request_status(request, message)
+
+    def _confirm_active_request(self) -> None:
+        if not self.session_token or not self.active_request_id:
+            return
+        try:
+            result = self.api.confirm_ride_request(
+                rider_session_id=self.session_token, request_id=self.active_request_id
+            )
+        except ServerAPIError as exc:
+            self.status_details.setText(str(exc))
+            return
+        maps_info = result.get("maps", {})
+        if maps_info:
+            link = maps_info.get("maps_url") or ""
+            extra = f" Map: {link}" if link else ""
+            self.status_details.setText(
+                f"Ride confirmed. Driver is en route.{extra}"
+            )
+        self.confirm_btn.setVisible(False)
+        self.active_request_id = result.get("request_id")
+
+    def _cancel_active_request(self) -> None:
+        if not self.session_token or not self.active_request_id:
+            return
+        try:
+            self.api.cancel_ride_request(
+                rider_session_id=self.session_token,
+                request_id=self.active_request_id,
+            )
+        except ServerAPIError as exc:
+            self.status_details.setText(str(exc))
+            return
+        self._render_request_status(None, "Request cancelled.")
+        self._rider_poll_timer.stop()
+
+    def _poll_driver_requests(self) -> None:
+        if not self.session_token or self.user_role != "driver":
+            self._driver_poll_timer.stop()
+            return
+        try:
+            queue = self.api.fetch_driver_requests(
+                driver_session_id=self.session_token
+            )
+        except ServerAPIError as exc:
+            self.pending_list.clear()
+            self.pending_list.addItem(str(exc))
+            return
+        self.pending_list.clear()
+        for request in queue.get("pending", []):
+            label = f"#{request.get('request_id')} {request.get('rider_name')} ({request.get('duration_min')} min)"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, request)
+            self.pending_list.addItem(item)
+        self.active_list.clear()
+        for request in queue.get("active", []):
+            label = (
+                f"#{request.get('request_id')} {request.get('rider_name')} • {request.get('status')}"
+            )
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, request)
+            self.active_list.addItem(item)
+        if self.pending_list.count() > 0:
+            self.pending_list.setCurrentRow(0)
+        elif self.active_list.count() > 0:
+            priority_row = -1
+            for idx in range(self.active_list.count()):
+                item = self.active_list.item(idx)
+                data = self._request_from_item(item)
+                status = str((data or {}).get("status") or "").upper()
+                if status != "COMPLETED":
+                    priority_row = idx
+                    break
+            target_row = priority_row if priority_row >= 0 else 0
+            self.active_list.setCurrentRow(target_row)
+        else:
+            self._show_request_details(None, allow_map=False)
+
+    def _selected_pending_request(self) -> Optional[Dict[str, Any]]:
+        item = self.pending_list.currentItem()
+        if not item:
+            return None
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict):
+            return None
+        return data
+
+    def _request_from_item(
+        self, item: Optional[QListWidgetItem]
+    ) -> Optional[Dict[str, Any]]:
+        if not item:
+            return None
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict):
+            return None
+        return data
+
+    def _show_request_details(
+        self, item: Optional[QListWidgetItem], *, allow_map: bool
+    ) -> None:
+        data = self._request_from_item(item)
+        if not data:
+            self.driver_info_label.setText(
+                "Select a request to view rider details."
+            )
+            self.open_map_btn.setVisible(False)
+            self.open_map_btn.setProperty("maps_url", None)
+            return
+        rider_name = data.get("rider_name") or data.get("rider_username") or "Rider"
+        pickup_area = data.get("pickup_area") or "Unknown pickup"
+        eta = data.get("duration_min")
+        distance = data.get("distance_km")
+        parts = [f"{rider_name} waiting near {pickup_area}."]
+        if eta is not None and distance is not None:
+            parts.append(f"Approx. {eta} min away ({distance} km).")
+        elif eta is not None:
+            parts.append(f"Approx. {eta} min away.")
+        elif distance is not None:
+            parts.append(f"Distance ~{distance} km.")
+        message = data.get("message")
+        if message:
+            parts.append(str(message))
+        self.driver_info_label.setText(" ".join(parts))
+        maps_url = data.get("maps_url")
+        status = str(data.get("status") or "").upper()
+        show_map = bool(allow_map and maps_url and status == "COMPLETED")
+        self.open_map_btn.setVisible(show_map)
+        self.open_map_btn.setProperty("maps_url", maps_url if show_map else None)
+
+    def _accept_selected_request(self) -> None:
+        request = self._selected_pending_request()
+        if not request or not self.session_token:
+            return
+        request_id = request.get("request_id")
+        try:
+            target_id = int(request_id)
+        except (TypeError, ValueError):
+            target_id = request_id
+        try:
+            self.api.driver_request_decision(
+                driver_session_id=self.session_token,
+                request_id=target_id,
+                decision="accept",
+            )
+        except ServerAPIError as exc:
+            self.pending_list.addItem(str(exc))
+            return
+        self._poll_driver_requests()
+
+    def _open_selected_request_map(self) -> None:
+        maps_url = self.open_map_btn.property("maps_url")
+        if not maps_url:
+            return
+        QDesktopServices.openUrl(QUrl(str(maps_url)))
+
+    def _reject_selected_request(self) -> None:
+        request = self._selected_pending_request()
+        if not request or not self.session_token:
+            return
+        request_id = request.get("request_id")
+        try:
+            target_id = int(request_id)
+        except (TypeError, ValueError):
+            target_id = request_id
+        try:
+            self.api.driver_request_decision(
+                driver_session_id=self.session_token,
+                request_id=target_id,
+                decision="reject",
+            )
+        except ServerAPIError as exc:
+            self.pending_list.addItem(str(exc))
+            return
+        self._poll_driver_requests()
 
     def prefill_for_driver(self, driver: Dict[str, Any]) -> None:
         self._last_selected_driver = driver
