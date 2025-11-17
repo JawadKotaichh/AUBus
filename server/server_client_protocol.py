@@ -33,6 +33,9 @@ class client_request_type(enum.IntEnum):
     FETCH_RIDE_REQUEST_STATUS = 18
     CONFIRM_RIDE_REQUEST = 19
     CANCEL_RIDE_REQUEST = 20
+    REGISTER_CHAT_ENDPOINT = 21
+    LIST_ACTIVE_CHATS = 22
+    REQUEST_P2P_CHAT = 23
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,8 @@ class server_response_type(enum.IntEnum):
     P2P_CONNECTION = 11
     USER_FOUND = 12
     PROFILE_UPDATED = 13
+    CHAT_ENDPOINT_REGISTERED = 14
+    CHATS_LIST = 15
 
 
 class msg_status(enum.IntEnum):

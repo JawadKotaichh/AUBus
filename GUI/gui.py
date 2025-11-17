@@ -14,6 +14,7 @@ from PyQt6.QtGui import (
     QBrush,
     QPainterPath,
     QShowEvent,
+    QCloseEvent,
     QDesktopServices,
 )
 from PyQt6.QtWidgets import (
@@ -34,6 +35,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QFrame,
+    QFileDialog,
     QPushButton,
     QStackedWidget,
     QScrollArea,
@@ -49,6 +51,7 @@ from PyQt6.QtWidgets import (
 )
 
 from server_api import AuthBackendServerAPI, MockServerAPI, ServerAPI, ServerAPIError
+from p2p_chat import PeerChatNode, PeerChatError
 
 ALLOWED_ZONES: List[str] = [
     "Hamra",
@@ -644,30 +647,68 @@ class StatBadge(QLabel):
 
 
 class MessageBubble(QWidget):
-    def __init__(self, body: str, sender: str, palette: Dict[str, str], is_self: bool = False):
+    def __init__(self, message: Dict[str, Any], palette: Dict[str, str], is_self: bool = False):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignmentFlag.AlignRight if is_self else Qt.AlignmentFlag.AlignLeft)
 
-        bubble = QLabel(body)
-        bubble.setWordWrap(True)
-        bubble.setMinimumWidth(120)
-        bubble.setMaximumWidth(360)
-        bubble.setStyleSheet(
-            "background-color: %s; color: %s; border-radius: 18px; padding: 10px; font-size: 10.5pt;"
+        media_type = str(message.get("media_type") or "text").lower()
+        bubble_widget = QWidget()
+        bubble_layout = QVBoxLayout(bubble_widget)
+        bubble_layout.setContentsMargins(12, 8, 12, 8)
+        bubble_layout.setSpacing(6)
+        bubble_widget.setStyleSheet(
+            "background-color: %s; color: %s; border-radius: 18px; font-size: 10.5pt;"
             % (
                 palette["chat_self"] if is_self else palette["chat_other"],
                 palette["chat_self_text"] if is_self else palette["text"],
             )
         )
 
-        caption = QLabel(sender.capitalize())
+        body_text = message.get("body", "")
+        if media_type == "text":
+            body_label = QLabel(body_text)
+            body_label.setWordWrap(True)
+            body_label.setMinimumWidth(160)
+            body_label.setMaximumWidth(360)
+            bubble_layout.addWidget(body_label)
+        else:
+            desc = QLabel(body_text or media_type.title())
+            desc.setWordWrap(True)
+            bubble_layout.addWidget(desc)
+            attachment_path = message.get("attachment_path")
+            if media_type == "photo" and attachment_path:
+                preview = QPixmap(attachment_path)
+                if not preview.isNull():
+                    img_label = QLabel()
+                    img_label.setPixmap(
+                        preview.scaledToWidth(
+                            280, Qt.TransformationMode.SmoothTransformation
+                        )
+                    )
+                    bubble_layout.addWidget(img_label)
+            if message.get("filename"):
+                filename_label = QLabel(message["filename"])
+                filename_label.setObjectName("muted")
+                bubble_layout.addWidget(filename_label)
+            if attachment_path:
+                open_btn = QPushButton("Open")
+                open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                path = attachment_path
+                open_btn.clicked.connect(
+                    lambda _=False, target=path: QDesktopServices.openUrl(
+                        QUrl.fromLocalFile(target)
+                    )
+                )
+                bubble_layout.addWidget(open_btn)
+
+        caption = QLabel((message.get("sender") or "peer").capitalize())
         caption.setObjectName("muted")
         caption.setStyleSheet("font-size: 8pt;")
         caption.setAlignment(Qt.AlignmentFlag.AlignRight if is_self else Qt.AlignmentFlag.AlignLeft)
 
-        layout.addWidget(bubble)
+        layout.addWidget(bubble_widget)
         layout.addWidget(caption)
 
 
@@ -956,6 +997,7 @@ class DashboardPage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
         self.api = api
+        self._session_token: Optional[str] = None
         layout = QVBoxLayout(self)
 
         self.stats_box = QGroupBox("Live Snapshot")
@@ -990,11 +1032,18 @@ class DashboardPage(QWidget):
         layout.addWidget(self.rides_box)
         layout.addStretch()
 
+    def set_session_token(self, token: Optional[str]) -> None:
+        self._session_token = token
+
     def refresh(self) -> None:
         try:
             weather = self.api.fetch_weather()
             rides = self.api.fetch_latest_rides()
-            chats = self.api.fetch_chats()
+            chats = (
+                self.api.fetch_chats(session_token=self._session_token)
+                if self._session_token
+                else []
+            )
         except ServerAPIError as exc:
             self.weather_status.setText(str(exc))
             self.weather_status.setStyleSheet("color: red;")
@@ -1012,8 +1061,16 @@ class DashboardPage(QWidget):
             )
             self.rides_list.addItem(item)
 
-        pending = sum(1 for ride in rides if ride.get("status") == "pending")
-        accepted = sum(1 for ride in rides if ride.get("status") == "accepted")
+        pending = sum(
+            1
+            for ride in rides
+            if str(ride.get("status", "")).lower() == "pending"
+        )
+        accepted = sum(
+            1
+            for ride in rides
+            if str(ride.get("status", "")).lower() == "accepted"
+        )
         self.pending_badge.update_value("Pending requests", str(pending))
         self.accepted_badge.update_value("Accepted rides", str(accepted))
         self.chats_badge.update_value("Active chats", str(len(chats)))
@@ -1660,12 +1717,17 @@ class SearchDriverPage(QWidget):
 # Chats ------------------------------------------------------------------------
 
 class ChatsPage(QWidget):
-    def __init__(self, api: ServerAPI):
+    def __init__(self, api: ServerAPI, chat_service: PeerChatNode):
         super().__init__()
         self.api = api
+        self.chat_service = chat_service
+        self.user: Optional[Dict[str, Any]] = None
+        self.session_token: Optional[str] = None
         self.current_chat_id: Optional[str] = None
         self.current_chat: Optional[Dict[str, Any]] = None
         self.palette = THEME_PALETTES["bolt_light"]
+        self.chat_histories: Dict[str, List[Dict[str, Any]]] = {}
+        self.chat_entries: Dict[str, Dict[str, Any]] = {}
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1680,7 +1742,7 @@ class ChatsPage(QWidget):
         self.chat_header = QGroupBox("Select a conversation")
         header_layout = QVBoxLayout(self.chat_header)
         self.chat_title = QLabel("No chat selected")
-        self.chat_status = QLabel("Status: —")
+        self.chat_status = QLabel("Waiting for ride confirmation")
         self.chat_status.setObjectName("muted")
         header_layout.addWidget(self.chat_title)
         header_layout.addWidget(self.chat_status)
@@ -1694,7 +1756,15 @@ class ChatsPage(QWidget):
         self.message_input.setPlaceholderText("Type a message")
         self.send_btn = QPushButton("Send")
         self.send_btn.clicked.connect(self._send_message)
+        self.voice_btn = QPushButton("Voice")
+        self.voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_btn.clicked.connect(self._send_voice_note)
+        self.photo_btn = QPushButton("Photo")
+        self.photo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.photo_btn.clicked.connect(self._send_photo)
         composer.addWidget(self.message_input, 4)
+        composer.addWidget(self.voice_btn)
+        composer.addWidget(self.photo_btn)
         composer.addWidget(self.send_btn, 1)
 
         right_panel.addWidget(self.chat_header)
@@ -1704,17 +1774,46 @@ class ChatsPage(QWidget):
         layout.addWidget(self.chat_list, 1)
         layout.addLayout(right_panel, 2)
 
+        self.chat_service.message_received.connect(self._handle_incoming_message)
+        self.chat_service.chat_ready.connect(self._handle_chat_ready)
+        self.chat_service.chat_error.connect(self._handle_chat_error)
+
+    def set_user(self, user: Optional[Dict[str, Any]]) -> None:
+        self.user = user or None
+        self.session_token = (self.user or {}).get("session_token")
+        self.chat_histories.clear()
+        self.chat_entries.clear()
+        self.current_chat = None
+        self.current_chat_id = None
+        self.chat_list.clear()
+        self.messages_view.clear()
+        self.chat_title.setText("No chat selected")
+        self.chat_status.setText("Waiting for ride confirmation")
+
+    def clear_user(self) -> None:
+        self.set_user(None)
+
     def refresh(self) -> None:
+        if not self.session_token:
+            self.chat_list.clear()
+            self.chat_list.addItem("Sign in to view rides ready for chat.")
+            return
         try:
-            chats = self.api.fetch_chats()
+            chats = self.api.fetch_chats(session_token=self.session_token)
         except ServerAPIError as exc:
             self.chat_list.clear()
-            self.chat_list.addItem(str(exc))
+            self.chat_list.addItem(f"Unable to load chats: {exc}")
             return
-
+        self.chat_entries = {chat["chat_id"]: chat for chat in chats}
         self.chat_list.clear()
+        if not chats:
+            self.chat_list.addItem("No confirmed rides available yet.")
+            return
         for chat in chats:
-            item = QListWidgetItem(chat["peer"])
+            label = chat.get("peer", {}).get("name") or chat.get("peer", "Peer")
+            if not chat.get("ready"):
+                label = f"{label} (waiting)"
+            item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, chat)
             self.chat_list.addItem(item)
 
@@ -1725,33 +1824,122 @@ class ChatsPage(QWidget):
         self.current_chat_id = chat["chat_id"]
         self.current_chat = chat
         self.chat_header.setTitle("Chat")
-        self.chat_title.setText(chat["peer"])
-        self.chat_status.setText(chat.get("status", "online"))
-        self._render_messages(chat.get("messages", []))
+        peer_name = chat.get("peer", {}).get("name") or "Peer"
+        self.chat_title.setText(peer_name)
+        self.chat_status.setText(chat.get("status", "offline"))
+        self._render_messages(self.chat_histories.get(self.current_chat_id, []))
+        self._ensure_handshake(chat)
+
+    def _ensure_handshake(self, chat: Dict[str, Any]) -> None:
+        if not self.session_token or not chat.get("ready"):
+            if not chat.get("ready"):
+                self.chat_status.setText("Both rider and driver must confirm the ride before chatting.")
+            return
+        chat_id = chat["chat_id"]
+        if self.chat_service.is_ready(chat_id):
+            self.chat_status.setText("Connected")
+            return
+        try:
+            handshake = self.api.request_chat_handshake(
+                session_token=self.session_token,
+                ride_id=int(chat["ride_id"]),
+            )
+        except ServerAPIError as exc:
+            self.chat_status.setText(f"Handshake failed: {exc}")
+            return
+        peer = handshake.get("peer") or {}
+        try:
+            self.chat_service.register_peer(
+                chat_id,
+                host=peer.get("ip") or "127.0.0.1",
+                port=int(peer.get("port")),
+                metadata={"supported_media": handshake.get("supported_media", [])},
+            )
+            self.chat_status.setText("Connected")
+        except (PeerChatError, ValueError) as exc:
+            self.chat_status.setText(f"Peer setup failed: {exc}")
 
     def _send_message(self) -> None:
         body = self.message_input.text().strip()
         if not self.current_chat_id or not body:
             return
+        sender = self._sender_name()
         try:
-            self.api.send_chat_message(self.current_chat_id, body)
-        except ServerAPIError as exc:
-            error_item = QListWidgetItem(f"Error: {exc}")
-            self.messages_view.addItem(error_item)
+            message = self.chat_service.send_text(
+                self.current_chat_id,
+                sender=sender,
+                body=body,
+            )
+        except PeerChatError as exc:
+            self.chat_status.setText(str(exc))
             return
         self.message_input.clear()
-        if self.current_chat is not None:
-            self.current_chat.setdefault("messages", []).append({"sender": "me", "body": body})
-            self._render_messages(self.current_chat["messages"])
+        self._append_local_message(self.current_chat_id, message)
+
+    def _send_photo(self) -> None:
+        self._send_file_message(
+            title="Share a photo",
+            file_filter="Images (*.png *.jpg *.jpeg *.bmp *.gif);;All Files (*)",
+            sender_func=self.chat_service.send_photo,
+        )
+
+    def _send_voice_note(self) -> None:
+        self._send_file_message(
+            title="Share a voice note",
+            file_filter="Audio (*.wav *.mp3 *.m4a *.aac);;All Files (*)",
+            sender_func=self.chat_service.send_voice,
+        )
+
+    def _send_file_message(
+        self,
+        *,
+        title: str,
+        file_filter: str,
+        sender_func,
+    ) -> None:
+        if not self.current_chat_id:
+            return
+        file_path, _ = QFileDialog.getOpenFileName(self, title, "", file_filter)
+        if not file_path:
+            return
+        sender = self._sender_name()
+        try:
+            message = sender_func(self.current_chat_id, sender, file_path)
+        except PeerChatError as exc:
+            self.chat_status.setText(str(exc))
+            return
+        self._append_local_message(self.current_chat_id, message)
+
+    def _sender_name(self) -> str:
+        if not self.user:
+            return "me"
+        return self.user.get("name") or self.user.get("username") or "me"
+
+    def _handle_incoming_message(self, chat_id: str, message: Dict[str, Any]) -> None:
+        self.chat_histories.setdefault(chat_id, []).append(message)
+        if self.current_chat_id == chat_id:
+            self._render_messages(self.chat_histories[chat_id])
+            self.chat_status.setText("Connected")
+
+    def _handle_chat_ready(self, chat_id: str) -> None:
+        if self.current_chat_id == chat_id:
+            self.chat_status.setText("Connected")
+
+    def _handle_chat_error(self, chat_id: str, error: str) -> None:
+        if not chat_id or self.current_chat_id == chat_id:
+            self.chat_status.setText(error)
+
+    def _append_local_message(self, chat_id: str, message: Dict[str, Any]) -> None:
+        self.chat_histories.setdefault(chat_id, []).append(message)
+        if self.current_chat_id == chat_id:
+            self._render_messages(self.chat_histories[chat_id])
 
     def _render_messages(self, messages: List[Dict[str, Any]]) -> None:
         self.messages_view.clear()
         for message in messages:
-            body = message.get("body", "")
-            sender = message.get("sender", "driver")
-            is_self = sender in {"me", "self", "passenger"}
+            is_self = message.get("direction") == "outgoing"
             item = QListWidgetItem()
-            widget = MessageBubble(body, sender, self.palette, is_self=is_self)
+            widget = MessageBubble(message, self.palette, is_self=is_self)
             item.setSizeHint(widget.sizeHint())
             self.messages_view.addItem(item)
             self.messages_view.setItemWidget(item, widget)
@@ -1760,8 +1948,8 @@ class ChatsPage(QWidget):
 
     def set_palette(self, palette: Dict[str, str]) -> None:
         self.palette = palette
-        if self.current_chat:
-            self._render_messages(self.current_chat.get("messages", []))
+        if self.current_chat_id:
+            self._render_messages(self.chat_histories.get(self.current_chat_id, []))
 
 
 # Trips ------------------------------------------------------------------------
@@ -2167,6 +2355,8 @@ class MainWindow(QMainWindow):
     def __init__(self, api: Optional[ServerAPI] = None, theme: str = "bolt_light"):
         super().__init__()
         self.api = api or AuthBackendServerAPI()
+        self.chat_service = PeerChatNode()
+        self.chat_service.start()
         self.theme = theme
         self.setWindowTitle("AUBus Client")
         self.resize(1200, 800)
@@ -2183,7 +2373,7 @@ class MainWindow(QMainWindow):
         self.dashboard_page = DashboardPage(self.api)
         self.request_page = RequestRidePage(self.api)
         self.search_page = SearchDriverPage(self.api)
-        self.chats_page = ChatsPage(self.api)
+        self.chats_page = ChatsPage(self.api, self.chat_service)
         self.profile_page = ProfilePage(self.api)
         self.trips_page = TripsPage(self.api)
 
@@ -2438,6 +2628,9 @@ class MainWindow(QMainWindow):
         self.user = hydrated
         self.profile_page.load_user(hydrated)
         self.request_page.set_user_context(hydrated)
+        self.dashboard_page.set_session_token(hydrated.get("session_token"))
+        self.chats_page.set_user(hydrated)
+        self._register_chat_endpoint(hydrated)
         self._update_logged_in_banner()
         self.apply_theme(user.get("theme", self.theme))
 
@@ -2448,6 +2641,21 @@ class MainWindow(QMainWindow):
         self.trips_page.refresh()
 
         self._switch_tab(0)
+
+    def _register_chat_endpoint(self, user: Dict[str, Any]) -> None:
+        session_token = user.get("session_token")
+        if not session_token:
+            return
+        try:
+            self.chat_service.start()
+            self.api.register_chat_endpoint(
+                session_token=session_token,
+                port=self.chat_service.port,
+            )
+            self.statusBar().showMessage("Chat endpoint registered", 3000)
+        except ServerAPIError as exc:
+            logger.error("Failed to register chat endpoint: %s", exc)
+            self.statusBar().showMessage(f"Chat unavailable: {exc}", 4000)
 
     def _on_profile_updated(self, updated_user: Dict[str, Any]) -> None:
         if self.user is None:
@@ -2491,8 +2699,11 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Logout failed: {exc}", 4000)
                 return
         self.user = None
+        self.dashboard_page.set_session_token(None)
+        self.chat_service.clear()
         self.profile_page.load_user({})
         self.request_page.clear_user_context()
+        self.chats_page.clear_user()
         for button in self._tab_buttons:
             button.setChecked(False)
         self.bottom_nav.setVisible(False)
@@ -2507,6 +2718,12 @@ class MainWindow(QMainWindow):
         app.setStyleSheet(build_stylesheet(theme))
         self.chats_page.set_palette(THEME_PALETTES.get(theme, THEME_PALETTES["bolt_light"]))
         self._refresh_tab_icons()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        try:
+            self.chat_service.shutdown()
+        finally:
+            super().closeEvent(event)
 
 
 # Entrypoint -------------------------------------------------------------------

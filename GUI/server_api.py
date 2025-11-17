@@ -32,6 +32,9 @@ _ACTION_TO_REQUEST_TYPE = {
     "ride_request_status": 18,
     "confirm_ride_request": 19,
     "cancel_ride_request": 20,
+    "chat_register": 21,
+    "chats": 22,
+    "chat_handshake": 23,
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
@@ -287,11 +290,28 @@ class ServerAPI:
     ) -> List[Dict[str, Any]]:
         return self._send_request("trips", {"filters": filters or {}})
 
-    def fetch_chats(self) -> List[Dict[str, Any]]:
-        return self._send_request("chats", None)
+    def register_chat_endpoint(
+        self, *, session_token: str, port: int
+    ) -> Dict[str, Any]:
+        payload = {"session_token": session_token, "port": int(port)}
+        return self._send_request("chat_register", payload)
 
-    def send_chat_message(self, chat_id: str, body: str) -> Dict[str, Any]:
-        return self._send_request("chat_message", {"chat_id": chat_id, "body": body})
+    def fetch_chats(self, *, session_token: str) -> List[Dict[str, Any]]:
+        response = self._send_request("chats", {"session_token": session_token})
+        if isinstance(response, dict):
+            chats = response.get("chats")
+            if chats is None:
+                chats = response.get("items")
+            return chats or []
+        if isinstance(response, list):
+            return response
+        return []
+
+    def request_chat_handshake(
+        self, *, session_token: str, ride_id: int
+    ) -> Dict[str, Any]:
+        payload = {"session_token": session_token, "ride_id": int(ride_id)}
+        return self._send_request("chat_handshake", payload)
 
     def update_profile(self, profile_data: Dict[str, Any]) -> Dict[str, Any]:
         output = self._send_request("update_profile", profile_data)
@@ -472,6 +492,7 @@ class MockServerAPI(ServerAPI):
             drivers=[
                 {
                     "id": "drv-100",
+                    "user_id": 201,
                     "name": "Lina A.",
                     "area": "Hamra",
                     "rating": 4.9,
@@ -481,6 +502,7 @@ class MockServerAPI(ServerAPI):
                 },
                 {
                     "id": "drv-101",
+                    "user_id": 202,
                     "name": "Omar K.",
                     "area": "Ashrafieh",
                     "rating": 4.7,
@@ -490,6 +512,7 @@ class MockServerAPI(ServerAPI):
                 },
                 {
                     "id": "drv-102",
+                    "user_id": 203,
                     "name": "Ali H.",
                     "area": "Baabda",
                     "rating": 4.5,
@@ -500,39 +523,31 @@ class MockServerAPI(ServerAPI):
             ],
             rides=[
                 {
-                    "id": "ride-1",
+                    "id": 101,
                     "from": "Hamra",
                     "to": "AUB Main Gate",
+                    "pickup_area": "Hamra",
+                    "destination": "AUB Main Gate",
+                    "requested_time": _ts_offset(60),
                     "time": _ts_offset(60),
-                    "status": "pending",
+                    "status": "PENDING",
+                    "rider_id": 1,
+                    "driver_id": 201,
                 },
                 {
-                    "id": "ride-2",
+                    "id": 102,
                     "from": "Verdun",
                     "to": "AUB Medical Gate",
+                    "pickup_area": "Verdun",
+                    "destination": "AUB Medical Gate",
+                    "requested_time": _ts_offset(120),
                     "time": _ts_offset(120),
-                    "status": "accepted",
+                    "status": "ACCEPTED",
+                    "rider_id": 1,
+                    "driver_id": 202,
                 },
             ],
-            chats=[
-                {
-                    "chat_id": "chat-1",
-                    "peer": "Lina A.",
-                    "status": "online",
-                    "messages": [
-                        {"sender": "driver", "body": "Meet at Barbar?"},
-                        {"sender": "me", "body": "Sure see you there!"},
-                    ],
-                },
-                {
-                    "chat_id": "chat-2",
-                    "peer": "Omar K.",
-                    "status": "last seen 5m ago",
-                    "messages": [
-                        {"sender": "driver", "body": "Traffic on Bliss, 5 min late."}
-                    ],
-                },
-            ],
+            chats=[],
             trips=[
                 {
                     "trip_id": "trip-11",
@@ -684,7 +699,7 @@ class MockServerAPI(ServerAPI):
         for idx, driver in enumerate(top_drivers, start=1):
             drivers.append(
                 {
-                    "driver_id": driver.get("id"),
+                    "driver_id": driver.get("user_id") or driver.get("id"),
                     "username": driver.get("name") or driver.get("id"),
                     "name": driver.get("name"),
                     "session_token": f"mock-driver-{driver.get('id')}",
@@ -770,19 +785,93 @@ class MockServerAPI(ServerAPI):
         self._require_login()
         return self.db.trips
 
-    def _handle_chats(self, _: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _handle_chats(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
-        return self.db.chats
+        _ = payload.get("session_token")
+        user_id = self._user.get("user_id")
+        active = [
+            ride
+            for ride in self.db.rides
+            if ride.get("status") == "PENDING"
+            and user_id in {ride.get("rider_id"), ride.get("driver_id")}
+        ]
+        self_ready = user_id in self._chat_endpoints
+        chats: List[Dict[str, Any]] = []
+        for ride in active:
+            peer_id = (
+                ride.get("driver_id")
+                if user_id == ride.get("rider_id")
+                else ride.get("rider_id")
+            )
+            if peer_id is None:
+                continue
+            chats.append(
+                {
+                    "chat_id": f"ride-{ride['id']}",
+                    "ride_id": ride["id"],
+                    "peer": self._mock_profile(peer_id),
+                    "status": ride.get("status"),
+                    "pickup_area": ride.get("pickup_area") or ride.get("from"),
+                    "destination": ride.get("destination") or ride.get("to"),
+                    "requested_time": ride.get("requested_time") or ride.get("time"),
+                    "peer_ready": peer_id in self._chat_endpoints,
+                    "self_ready": self_ready,
+                    "ready": self_ready and (peer_id in self._chat_endpoints),
+                }
+            )
+        return {"chats": chats}
 
-    def _handle_chat_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle_chat_register(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
-        chat = next(
-            (c for c in self.db.chats if c["chat_id"] == payload["chat_id"]), None
+        user_id = self._user.get("user_id")
+        try:
+            port = int(payload.get("port"))
+        except (TypeError, ValueError):
+            raise ServerAPIError("port must be numeric")
+        self._chat_endpoints[user_id] = {"ip": "127.0.0.1", "port_number": port}
+        return {"session_token": payload.get("session_token") or "mock-token", "port": port}
+
+    def _handle_chat_handshake(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
+        try:
+            ride_id = int(payload.get("ride_id"))
+        except (TypeError, ValueError):
+            raise ServerAPIError("ride_id must be numeric")
+        ride = next((r for r in self.db.rides if r["id"] == ride_id), None)
+        if not ride:
+            raise ServerAPIError("Ride not found")
+        if ride.get("status") != "PENDING":
+            raise ServerAPIError("Chat available only for active rides")
+        user_id = self._user.get("user_id")
+        if user_id not in {ride.get("rider_id"), ride.get("driver_id")}:
+            raise ServerAPIError("You are not part of this ride")
+        if user_id not in self._chat_endpoints:
+            raise ServerAPIError("Register your chat endpoint first")
+        peer_id = (
+            ride.get("driver_id")
+            if user_id == ride.get("rider_id")
+            else ride.get("rider_id")
         )
-        if not chat:
-            raise ServerAPIError("Chat not found")
-        chat["messages"].append({"sender": "me", "body": payload["body"]})
-        return {"status": "sent"}
+        self._chat_endpoints: Dict[int, Dict[str, Any]] = {}
+        if peer_id not in self._chat_endpoints:
+            raise ServerAPIError("Peer is offline, please try again later")
+        peer_endpoint = self._chat_endpoints[peer_id]
+        self_endpoint = self._chat_endpoints[user_id]
+        return {
+            "chat_id": f"ride-{ride_id}",
+            "ride_id": ride_id,
+            "supported_media": ["text", "voice", "photo"],
+            "peer": {
+                **self._mock_profile(peer_id),
+                "ip": peer_endpoint["ip"],
+                "port": peer_endpoint["port_number"],
+            },
+            "self": {
+                "user_id": user_id,
+                "ip": self_endpoint["ip"],
+                "port": self_endpoint["port_number"],
+            },
+        }
 
     # --- request workflow API ---------------------------------------------------
     def fetch_driver_requests(self, *, driver_session_id: str) -> Dict[str, Any]:
@@ -811,6 +900,26 @@ class MockServerAPI(ServerAPI):
             elif request["status"] in {"AWAITING_RIDER", "COMPLETED"}:
                 active.append(entry)
         return {"pending": pending, "active": active}
+
+    def _mock_profile(self, user_id: int) -> Dict[str, Any]:
+        if user_id == self._user.get("user_id"):
+            return {
+                "user_id": user_id,
+                "name": self._user.get("name")
+                or self._user.get("username")
+                or "You",
+                "role": self._user.get("role") or "passenger",
+            }
+        driver = next(
+            (d for d in self.db.drivers if d.get("user_id") == user_id), None
+        )
+        if driver:
+            return {
+                "user_id": user_id,
+                "name": driver.get("name") or driver.get("username") or "Driver",
+                "role": "driver",
+            }
+        return {"user_id": user_id, "name": f"User {user_id}", "role": "passenger"}
 
     def _mock_request_by_id(self, request_id: str) -> Optional[Dict[str, Any]]:
         return next(
@@ -857,9 +966,20 @@ class MockServerAPI(ServerAPI):
         if not request:
             raise ServerAPIError("Ride request not found.")
         request["status"] = "COMPLETED"
-        ride_id = f"ride-{len(self.db.rides) + 100}"
+        ride_id = len(self.db.rides) + 200
         self.db.rides.append(
-            {"id": ride_id, "from": request["origin"], "to": request["destination"], "time": request["pickup_time"], "status": "accepted"}
+            {
+                "id": ride_id,
+                "from": request["origin"],
+                "to": request["destination"],
+                "pickup_area": request["origin"],
+                "destination": request["destination"],
+                "time": request["pickup_time"],
+                "requested_time": request["pickup_time"],
+                "status": "PENDING",
+                "rider_id": request["rider"]["user_id"],
+                "driver_id": (request.get("current_driver") or {}).get("driver_id", 201),
+            }
         )
         return {
             "request_id": request_id,
@@ -1103,4 +1223,21 @@ class AuthBackendServerAPI(MockServerAPI):
     ) -> Dict[str, Any]:
         return self._backend.cancel_ride_request(
             rider_session_id=rider_session_id, request_id=request_id, reason=reason
+        )
+
+    def register_chat_endpoint(
+        self, *, session_token: str, port: int
+    ) -> Dict[str, Any]:
+        return self._backend.register_chat_endpoint(
+            session_token=session_token, port=port
+        )
+
+    def fetch_chats(self, *, session_token: str) -> List[Dict[str, Any]]:
+        return self._backend.fetch_chats(session_token=session_token)
+
+    def request_chat_handshake(
+        self, *, session_token: str, ride_id: int
+    ) -> Dict[str, Any]:
+        return self._backend.request_chat_handshake(
+            session_token=session_token, ride_id=ride_id
         )

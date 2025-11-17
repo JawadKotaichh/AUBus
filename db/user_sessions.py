@@ -108,6 +108,58 @@ def create_session(
         )
 
 
+def update_session_endpoint(
+    session_token: str,
+    *,
+    port_number: int,
+) -> DBResponse:
+    """
+    Update the listening port associated with an active user session.
+
+    The IP address remains whatever was recorded during login; we only need to
+    refresh the port that the peer-to-peer chat listener exposes.
+    """
+    token = (session_token or "").strip()
+    if not token:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload("session_token cannot be empty."),
+        )
+    validation_error = _validate_endpoint(None, port_number)
+    if validation_error:
+        return validation_error
+    try:
+        cur = DB_CONNECTION.execute(
+            """
+            UPDATE user_sessions
+            SET port_number = ?, last_seen = CURRENT_TIMESTAMP
+            WHERE session_token = ?
+            """,
+            (port_number, token),
+        )
+        DB_CONNECTION.commit()
+        if cur.rowcount == 0:
+            return DBResponse(
+                type=db_response_type.ERROR,
+                status=db_msg_status.NOT_FOUND,
+                payload=_error_payload("Active session not found for provided token."),
+            )
+        return DBResponse(
+            type=db_response_type.SESSION_CREATED,
+            status=db_msg_status.OK,
+            payload=_ok_payload(
+                {"session_token": token, "port_number": port_number}
+            ),
+        )
+    except sqlite3.Error as exc:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(str(exc)),
+        )
+
+
 def get_session_by_user(user_id: int) -> DBResponse:
     """Fetch a session row for the provided user."""
     try:

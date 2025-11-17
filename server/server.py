@@ -30,6 +30,11 @@ from server.request_handlers import (
     handle_rider_request_status,
     handle_cancel_match_request,
 )
+from server.chat_handlers import (
+    handle_list_active_chats,
+    handle_register_chat_endpoint,
+    handle_request_p2p_chat,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -111,6 +116,12 @@ def dispatch_request(
             response = handle_rider_confirm_request(request_payload)
         case client_request_type.CANCEL_RIDE_REQUEST:
             response = handle_cancel_match_request(request_payload)
+        case client_request_type.REGISTER_CHAT_ENDPOINT:
+            response = handle_register_chat_endpoint(request_payload)
+        case client_request_type.LIST_ACTIVE_CHATS:
+            response = handle_list_active_chats(request_payload)
+        case client_request_type.REQUEST_P2P_CHAT:
+            response = handle_request_p2p_chat(request_payload)
         case _:
             response = make_server_error_response(
                 f"Unsupported request type: {request.type!r}"
