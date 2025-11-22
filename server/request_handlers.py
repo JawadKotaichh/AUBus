@@ -8,7 +8,7 @@ from server.server_client_protocol import (
     server_response_type,
     msg_status,
 )
-from db.user_sessions import get_active_session
+from db.user_sessions import get_active_session, touch_session
 from db.user_db import (
     get_user_profile,
     get_rides_driver,
@@ -783,6 +783,7 @@ def handle_driver_request_queue(payload: Dict[str, Any]) -> ServerResponse:
             else "Unknown session error."
         )
         return _error_server(f"Session verification failed: {err}")
+    touch_session(session_id)
     driver_id = session_response.payload["output"]["user_id"]
 
     driver_profile = get_user_profile(driver_id)
@@ -891,6 +892,7 @@ def handle_rider_request_status(payload: Dict[str, Any]) -> ServerResponse:
             else "Unknown session error."
         )
         return _error_server(f"Session verification failed: {err}")
+    touch_session(session_id)
     rider_id = session_response.payload["output"]["user_id"]
 
     request_response = get_latest_request_for_rider(rider_id)
@@ -940,6 +942,7 @@ def handle_rider_confirm_request(payload: Dict[str, Any]) -> ServerResponse:
             else "Unknown session error."
         )
         return _error_server(f"Session verification failed: {err}")
+    touch_session(session_id)
     rider_id = session_response.payload["output"]["user_id"]
 
     request_response = fetch_request_for_confirmation(request_id, rider_id)

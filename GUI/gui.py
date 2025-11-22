@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QSizePolicy,
 )
+from PyQt6.QtMultimedia import QMediaCaptureSession, QAudioInput, QMediaRecorder
 
 from server_api import AuthBackendServerAPI, MockServerAPI, ServerAPI, ServerAPIError
 from p2p_chat import PeerChatNode, PeerChatError
@@ -1758,7 +1759,7 @@ class ChatsPage(QWidget):
         self.send_btn.clicked.connect(self._send_message)
         self.voice_btn = QPushButton("Voice")
         self.voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.voice_btn.clicked.connect(self._send_voice_note)
+        self.voice_btn.clicked.connect(self._toggle_recording)
         self.photo_btn = QPushButton("Photo")
         self.photo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.photo_btn.clicked.connect(self._send_photo)
@@ -1778,6 +1779,19 @@ class ChatsPage(QWidget):
         self.chat_service.chat_ready.connect(self._handle_chat_ready)
         self.chat_service.chat_error.connect(self._handle_chat_error)
 
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(5000)
+        self._poll_timer.timeout.connect(self.refresh)
+
+        # Audio Recording Setup
+        self._audio_session = QMediaCaptureSession()
+        self._audio_input = QAudioInput()
+        self._media_recorder = QMediaRecorder()
+        self._audio_session.setAudioInput(self._audio_input)
+        self._audio_session.setRecorder(self._media_recorder)
+        self._media_recorder.recorderStateChanged.connect(self._on_recorder_state_changed)
+        self._recording_path: Optional[str] = None
+
     def set_user(self, user: Optional[Dict[str, Any]]) -> None:
         self.user = user or None
         self.session_token = (self.user or {}).get("session_token")
@@ -1789,9 +1803,14 @@ class ChatsPage(QWidget):
         self.messages_view.clear()
         self.chat_title.setText("No chat selected")
         self.chat_status.setText("Waiting for ride confirmation")
+        if self.session_token:
+            self._poll_timer.start()
+        else:
+            self._poll_timer.stop()
 
     def clear_user(self) -> None:
         self.set_user(None)
+        self._poll_timer.stop()
 
     def refresh(self) -> None:
         if not self.session_token:
@@ -1805,17 +1824,40 @@ class ChatsPage(QWidget):
             self.chat_list.addItem(f"Unable to load chats: {exc}")
             return
         self.chat_entries = {chat["chat_id"]: chat for chat in chats}
+        
+        # Preserve selection if possible
+        current_row = self.chat_list.currentRow()
         self.chat_list.clear()
+        
         if not chats:
             self.chat_list.addItem("No confirmed rides available yet.")
+            if self.current_chat_id:
+                self._disable_chat_ui("Ride completed or canceled.")
             return
+
+        active_chat_ids = set()
         for chat in chats:
+            chat_id = chat["chat_id"]
+            active_chat_ids.add(chat_id)
             label = chat.get("peer", {}).get("name") or chat.get("peer", "Peer")
             if not chat.get("ready"):
                 label = f"{label} (waiting)"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, chat)
             self.chat_list.addItem(item)
+            
+            # Restore selection
+            if self.current_chat_id == chat_id:
+                item.setSelected(True)
+                self.chat_list.setCurrentItem(item)
+                # Update current chat data in case status changed
+                self.current_chat = chat
+                self._update_chat_ui_state(chat)
+
+        if self.current_chat_id and self.current_chat_id not in active_chat_ids:
+            self._disable_chat_ui("Ride completed or canceled.")
+            self.current_chat_id = None
+            self.current_chat = None
 
     def _load_chat(self, current: Optional[QListWidgetItem]) -> None:
         if not current:
@@ -1828,7 +1870,24 @@ class ChatsPage(QWidget):
         self.chat_title.setText(peer_name)
         self.chat_status.setText(chat.get("status", "offline"))
         self._render_messages(self.chat_histories.get(self.current_chat_id, []))
+        self._update_chat_ui_state(chat)
         self._ensure_handshake(chat)
+
+    def _update_chat_ui_state(self, chat: Dict[str, Any]) -> None:
+        is_ready = chat.get("ready", False)
+        self.message_input.setEnabled(is_ready)
+        self.send_btn.setEnabled(is_ready)
+        self.voice_btn.setEnabled(is_ready)
+        self.photo_btn.setEnabled(is_ready)
+        if not is_ready:
+             self.chat_status.setText("Waiting for ride confirmation...")
+
+    def _disable_chat_ui(self, reason: str) -> None:
+        self.message_input.setEnabled(False)
+        self.send_btn.setEnabled(False)
+        self.voice_btn.setEnabled(False)
+        self.photo_btn.setEnabled(False)
+        self.chat_status.setText(reason)
 
     def _ensure_handshake(self, chat: Dict[str, Any]) -> None:
         if not self.session_token or not chat.get("ready"):
@@ -1883,12 +1942,54 @@ class ChatsPage(QWidget):
             sender_func=self.chat_service.send_photo,
         )
 
-    def _send_voice_note(self) -> None:
-        self._send_file_message(
-            title="Share a voice note",
-            file_filter="Audio (*.wav *.mp3 *.m4a *.aac);;All Files (*)",
-            sender_func=self.chat_service.send_voice,
-        )
+    def _toggle_recording(self) -> None:
+        if self._media_recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            self._media_recorder.stop()
+        else:
+            if not self.current_chat_id:
+                return
+            # Create a temp file path
+            import tempfile
+            import os
+            fd, path = tempfile.mkstemp(suffix=".m4a")
+            os.close(fd)
+            self._recording_path = path
+            self._media_recorder.setOutputLocation(QUrl.fromLocalFile(path))
+            self._media_recorder.record()
+
+    def _on_recorder_state_changed(self, state: QMediaRecorder.RecorderState) -> None:
+        if state == QMediaRecorder.RecorderState.RecordingState:
+            self.voice_btn.setText("Stop & Send")
+            self.voice_btn.setStyleSheet("background-color: #ff4444; color: white;")
+            self.message_input.setEnabled(False)
+            self.send_btn.setEnabled(False)
+            self.photo_btn.setEnabled(False)
+        elif state == QMediaRecorder.RecorderState.StoppedState:
+            self.voice_btn.setText("Voice")
+            self.voice_btn.setStyleSheet("")
+            self.message_input.setEnabled(True)
+            self.send_btn.setEnabled(True)
+            self.photo_btn.setEnabled(True)
+            
+            if self._recording_path:
+                # Send the recorded file
+                sender = self._sender_name()
+                try:
+                    message = self.chat_service.send_voice(
+                        self.current_chat_id,
+                        sender=sender,
+                        file_path=self._recording_path
+                    )
+                    self._append_local_message(self.current_chat_id, message)
+                except PeerChatError as exc:
+                    self.chat_status.setText(str(exc))
+                finally:
+                    # Cleanup temp file? 
+                    # PeerChatNode reads it immediately, but we might want to keep it 
+                    # or let the OS handle temp cleanup. 
+                    # For now, we leave it as PeerChatNode might need it if it does async reading (it doesn't, it reads bytes immediately).
+                    pass
+                self._recording_path = None
 
     def _send_file_message(
         self,
