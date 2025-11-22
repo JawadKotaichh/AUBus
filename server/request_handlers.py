@@ -457,7 +457,7 @@ def handle_list_rider_rides(payload: Dict[str, Any]) -> ServerResponse:
 
 _AUB_REFERENCE_ADDRESS = "AUB Main Gate, Beirut, Lebanon"
 _AUB_COORDINATES_CACHE: Optional[Tuple[float, float, str]] = None
-_AUTOMATED_DRIVER_LIMIT = 3
+_AUTOMATED_DRIVER_LIMIT: Optional[int] = None  # None => no hard cap; otherwise limit the initial candidate list
 
 
 def _coerce_rider_location_flag(
@@ -655,7 +655,8 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
                 "No drivers matched the requested time. Showing nearby drivers instead."
             )
 
-    drivers = drivers[:_AUTOMATED_DRIVER_LIMIT]
+    if isinstance(_AUTOMATED_DRIVER_LIMIT, int) and _AUTOMATED_DRIVER_LIMIT > 0:
+        drivers = drivers[:_AUTOMATED_DRIVER_LIMIT]
 
     if not drivers:
         message = (
@@ -837,7 +838,7 @@ def handle_driver_request_decision(payload: Dict[str, Any]) -> ServerResponse:
         decision_text = str(decision_raw or "").strip().lower()
         if decision_text in {"accept", "accepted", "yes", "true"}:
             accepted = True
-        elif decision_text in {"reject", "rejected", "no", "false"}:
+        elif decision_text in {"reject", "rejected", "no", "false", "cancel", "cancelled", "decline", "declined"}:
             accepted = False
         else:
             accepted = None

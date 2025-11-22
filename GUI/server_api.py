@@ -694,7 +694,7 @@ class MockServerAPI(ServerAPI):
         request_id = f"auto-{self._request_counter:04d}"
         origin = "AUB Campus" if at_aub else (self._user.get("area") or "Home")
         destination = (self._user.get("area") or "Home") if at_aub else "AUB Campus"
-        top_drivers = self.db.drivers[:3]
+        top_drivers = self.db.drivers[:3]  # limit to 3 closest drivers
         drivers = []
         for idx, driver in enumerate(top_drivers, start=1):
             drivers.append(
@@ -718,6 +718,7 @@ class MockServerAPI(ServerAPI):
             "status": status,
             "drivers_total": len(drivers),
             "current_driver": drivers[0] if drivers else None,
+            "current_driver_index": 0 if drivers else None,
             "drivers": drivers,
             "pickup_time": requested_time,
             "message": message,
@@ -743,6 +744,7 @@ class MockServerAPI(ServerAPI):
             "status": status,
             "drivers_total": len(drivers),
             "current_driver": request_entry["current_driver"],
+            "current_driver_index": request_entry.get("current_driver_index"),
             "drivers": drivers,
             "message": message,
             "pickup_area": origin,
@@ -945,7 +947,22 @@ class MockServerAPI(ServerAPI):
             else str(decision).strip().lower() in {"accept", "accepted", "true", "1"}
         )
         request["message"] = note or request.get("message")
-        request["status"] = "AWAITING_RIDER" if accepted else "EXHAUSTED"
+        if accepted:
+            request["status"] = "AWAITING_RIDER"
+        else:
+            drivers = request.get("drivers") or []
+            current_index = int(request.get("current_driver_index") or 0)
+            next_index = current_index + 1
+            if next_index < len(drivers):
+                request["current_driver_index"] = next_index
+                request["current_driver"] = drivers[next_index]
+                request["status"] = "DRIVER_PENDING"
+                request["message"] = note or "Previous driver declined; moving to the next closest driver."
+            else:
+                request["current_driver_index"] = None
+                request["current_driver"] = None
+                request["status"] = "EXHAUSTED"
+                request["message"] = note or "All nearby drivers declined the request."
         return {
             "request_id": request_id,
             "status": request["status"],

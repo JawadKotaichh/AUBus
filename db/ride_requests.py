@@ -31,6 +31,8 @@ class RiderRequestDriverStatus(str, enum.Enum):
     REJECTED = "REJECTED"
     SKIPPED = "SKIPPED"
 
+MAX_ACTIVE_PENDING = 3  # keep at most this many drivers simultaneously notified
+
 
 _FINAL_STATUSES: Tuple[str, ...] = tuple(
     status.value for status in (RideRequestStatus.COMPLETED, RideRequestStatus.EXHAUSTED, RideRequestStatus.CANCELED)
@@ -224,6 +226,39 @@ def _fetch_current_candidate(request_id: int, sequence: int) -> Optional[Dict[st
     }
 
 
+def _promote_waiting_candidates(request_id: int, *, max_active: int = MAX_ACTIVE_PENDING) -> None:
+    """Ensure up to `max_active` candidates are in PENDING by promoting from WAITING."""
+    pending_count = DB_CONNECTION.execute(
+        """
+        SELECT COUNT(*) FROM ride_request_candidates
+        WHERE request_id = ? AND status = ?
+        """,
+        (request_id, RiderRequestDriverStatus.PENDING.value),
+    ).fetchone()[0]
+    slots = max_active - int(pending_count)
+    if slots <= 0:
+        return
+    waiting_rows = DB_CONNECTION.execute(
+        """
+        SELECT id FROM ride_request_candidates
+        WHERE request_id = ? AND status = ?
+        ORDER BY sequence ASC
+        LIMIT ?
+        """,
+        (request_id, RiderRequestDriverStatus.WAITING.value, slots),
+    ).fetchall()
+    if not waiting_rows:
+        return
+    waiting_ids = [row[0] for row in waiting_rows]
+    DB_CONNECTION.execute(
+        f"""
+        UPDATE ride_request_candidates
+        SET status = ?, assigned_at = CURRENT_TIMESTAMP
+        WHERE id IN ({",".join("?" for _ in waiting_ids)})
+        """,
+        (RiderRequestDriverStatus.PENDING.value, *waiting_ids),
+    )
+
 def create_ride_request(
     *,
     rider_id: int,
@@ -300,6 +335,7 @@ def create_ride_request(
             for sequence, driver in enumerate(drivers, start=1):
                 driver_id = int(driver.get("driver_id") or driver.get("id"))
                 driver_session_id = driver.get("session_token")
+                is_initial_batch = sequence <= MAX_ACTIVE_PENDING  # send to the first batch immediately
                 DB_CONNECTION.execute(
                     """
                     INSERT INTO ride_request_candidates (
@@ -332,13 +368,13 @@ def create_ride_request(
                     _ensure_float(driver.get("distance_km")),
                     driver.get("maps_url"),
                     RiderRequestDriverStatus.PENDING.value
-                    if sequence == 1
+                    if is_initial_batch
                     else RiderRequestDriverStatus.WAITING.value,
                     sequence,
-                        1 if sequence == 1 else 0,
+                        1 if is_initial_batch else 0,
                     ),
                 )
-                if sequence == 1:
+                if current_sequence == 0:
                     current_sequence = sequence
                     current_driver_id = driver_id
                     current_driver_session_id = driver_session_id
@@ -668,6 +704,23 @@ def record_driver_decision(
                 )
                 DB_CONNECTION.execute(
                     """
+                    UPDATE ride_request_candidates
+                    SET status = ?, responded_at = COALESCE(responded_at, CURRENT_TIMESTAMP)
+                    WHERE request_id = ?
+                      AND id != ?
+                      AND status IN (?, ?, ?)
+                    """,
+                    (
+                        RiderRequestDriverStatus.SKIPPED.value,
+                        request_id,
+                        candidate_id,
+                        RiderRequestDriverStatus.PENDING.value,
+                        RiderRequestDriverStatus.WAITING.value,
+                        RiderRequestDriverStatus.REJECTED.value,
+                    ),
+                )
+                DB_CONNECTION.execute(
+                    """
                     UPDATE ride_requests
                     SET status = ?,
                         current_candidate_sequence = ?,
@@ -698,7 +751,8 @@ def record_driver_decision(
                     """,
                     (RiderRequestDriverStatus.REJECTED.value, note, candidate_id),
                 )
-                next_candidate = DB_CONNECTION.execute(
+                _promote_waiting_candidates(request_id, max_active=MAX_ACTIVE_PENDING)
+                next_pending = DB_CONNECTION.execute(
                     """
                     SELECT id, driver_id, driver_session_id, sequence
                     FROM ride_request_candidates
@@ -707,18 +761,10 @@ def record_driver_decision(
                     ORDER BY sequence ASC
                     LIMIT 1
                     """,
-                    (request_id, RiderRequestDriverStatus.WAITING.value),
+                    (request_id, RiderRequestDriverStatus.PENDING.value),
                 ).fetchone()
-                if next_candidate:
-                    next_id, next_driver_id, next_session_id, next_sequence = next_candidate
-                    DB_CONNECTION.execute(
-                        """
-                        UPDATE ride_request_candidates
-                        SET status = ?, assigned_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (RiderRequestDriverStatus.PENDING.value, next_id),
-                    )
+                if next_pending:
+                    _, next_driver_id, next_session_id, next_sequence = next_pending
                     DB_CONNECTION.execute(
                         """
                         UPDATE ride_requests
@@ -736,7 +782,7 @@ def record_driver_decision(
                             next_sequence,
                             next_driver_id,
                             next_session_id,
-                            note,
+                            note or "Previous driver declined; moving to the next driver in the queue.",
                             request_id,
                         ),
                     )
@@ -911,6 +957,22 @@ def cancel_request(request_id: int, rider_id: int, note: Optional[str] = None) -
                 WHERE id = ?
                 """,
                 (RideRequestStatus.CANCELED.value, note, request_id),
+            )
+            DB_CONNECTION.execute(
+                """
+                UPDATE ride_request_candidates
+                SET status = ?, responded_at = CURRENT_TIMESTAMP, message = ?
+                WHERE request_id = ?
+                  AND status IN (?, ?, ?)
+                """,
+                (
+                    RiderRequestDriverStatus.SKIPPED.value,
+                    note,
+                    request_id,
+                    RiderRequestDriverStatus.PENDING.value,
+                    RiderRequestDriverStatus.WAITING.value,
+                    RiderRequestDriverStatus.REJECTED.value,
+                ),
             )
         return DBResponse(
             type=db_response_type.RIDE_UPDATED,
