@@ -35,6 +35,8 @@ _ACTION_TO_REQUEST_TYPE = {
     "chat_register": 21,
     "chats": 22,
     "chat_handshake": 23,
+    "complete_ride": 24,
+    "rate_driver": 25,
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
@@ -284,6 +286,44 @@ class ServerAPI:
         if reason:
             payload["reason"] = reason
         return self._send_request("cancel_ride_request", payload)
+
+    def complete_ride(
+        self,
+        *,
+        driver_session_id: str,
+        ride_id: int,
+        rider_rating: float,
+        comment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not driver_session_id:
+            raise ServerAPIError("driver_session_id is required.")
+        payload: Dict[str, Any] = {
+            "driver_session_id": driver_session_id,
+            "ride_id": int(ride_id),
+            "rider_rating": float(rider_rating),
+        }
+        if comment:
+            payload["comment"] = comment
+        return self._send_request("complete_ride", payload)
+
+    def rate_driver(
+        self,
+        *,
+        rider_session_id: str,
+        ride_id: int,
+        driver_rating: float,
+        comment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not rider_session_id:
+            raise ServerAPIError("rider_session_id is required.")
+        payload: Dict[str, Any] = {
+            "rider_session_id": rider_session_id,
+            "ride_id": int(ride_id),
+            "driver_rating": float(driver_rating),
+        }
+        if comment:
+            payload["comment"] = comment
+        return self._send_request("rate_driver", payload)
 
     def fetch_trips(
         self, *, filters: Optional[Dict[str, Any]] = None
@@ -783,6 +823,54 @@ class MockServerAPI(ServerAPI):
         ride["status"] = "cancelled"
         return {"status": "cancelled"}
 
+    def _handle_complete_ride(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
+        ride_raw = payload.get("ride_id")
+        try:
+            ride_id = int(ride_raw)
+        except (TypeError, ValueError):
+            ride_id = ride_raw
+        rating = payload.get("rider_rating")
+        for ride in self.db.rides:
+            ride_identifier = ride.get("id")
+            try:
+                ride_numeric = int(ride_identifier)
+            except (TypeError, ValueError):
+                ride_numeric = None
+            if ride_numeric == ride_id or ride_identifier == ride_id:
+                ride["status"] = "AWAITING_RATING"
+                ride["rider_rating"] = rating
+                break
+        for request in self.db.ride_requests:
+            if request.get("ride_id") == ride_id:
+                request["ride_status"] = "AWAITING_RATING"
+                break
+        return {"ride_id": ride_id, "status": "AWAITING_RATING", "rider_rating": rating}
+
+    def _handle_rate_driver(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._require_login()
+        ride_raw = payload.get("ride_id")
+        try:
+            ride_id = int(ride_raw)
+        except (TypeError, ValueError):
+            ride_id = ride_raw
+        rating = payload.get("driver_rating")
+        for ride in self.db.rides:
+            ride_identifier = ride.get("id")
+            try:
+                ride_numeric = int(ride_identifier)
+            except (TypeError, ValueError):
+                ride_numeric = None
+            if ride_numeric == ride_id or ride_identifier == ride_id:
+                ride["driver_rating"] = rating
+                ride["status"] = "COMPLETE"
+                break
+        for request in self.db.ride_requests:
+            if request.get("ride_id") == ride_id:
+                request["ride_status"] = "COMPLETE"
+                break
+        return {"ride_id": ride_id, "driver_rating": rating}
+
     def _handle_trips(self, _: Dict[str, Any]) -> List[Dict[str, Any]]:
         self._require_login()
         return self.db.trips
@@ -896,6 +984,8 @@ class MockServerAPI(ServerAPI):
                 ),
                 "message": request.get("message"),
                 "status": request["status"],
+                "ride_id": request.get("ride_id"),
+                "ride_status": request.get("ride_status"),
             }
             if request["status"] == "DRIVER_PENDING":
                 pending.append(entry)
@@ -973,7 +1063,16 @@ class MockServerAPI(ServerAPI):
         self._require_login()
         if not self.db.ride_requests:
             return {"request": None, "message": "No ride requests yet."}
-        return self.db.ride_requests[0]
+        request = self.db.ride_requests[0]
+        ride_status = str(request.get("ride_status") or "").upper()
+        if ride_status == "COMPLETE":
+            return {"request": None, "message": "Ride completed."}
+        if ride_status == "AWAITING_RATING":
+            return {
+                "request": request,
+                "message": "Please rate your driver to close this ride.",
+            }
+        return request
 
     def confirm_ride_request(
         self, *, rider_session_id: str, request_id: int
@@ -998,6 +1097,8 @@ class MockServerAPI(ServerAPI):
                 "driver_id": (request.get("current_driver") or {}).get("driver_id", 201),
             }
         )
+        request["ride_id"] = ride_id
+        request["ride_status"] = "PENDING"
         return {
             "request_id": request_id,
             "ride_id": ride_id,
@@ -1240,6 +1341,36 @@ class AuthBackendServerAPI(MockServerAPI):
     ) -> Dict[str, Any]:
         return self._backend.cancel_ride_request(
             rider_session_id=rider_session_id, request_id=request_id, reason=reason
+        )
+
+    def complete_ride(
+        self,
+        *,
+        driver_session_id: str,
+        ride_id: int,
+        rider_rating: float,
+        comment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._backend.complete_ride(
+            driver_session_id=driver_session_id,
+            ride_id=ride_id,
+            rider_rating=rider_rating,
+            comment=comment,
+        )
+
+    def rate_driver(
+        self,
+        *,
+        rider_session_id: str,
+        ride_id: int,
+        driver_rating: float,
+        comment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._backend.rate_driver(
+            rider_session_id=rider_session_id,
+            ride_id=ride_id,
+            driver_rating=driver_rating,
+            comment=comment,
         )
 
     def register_chat_endpoint(

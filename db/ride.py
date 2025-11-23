@@ -13,6 +13,7 @@ class RideStatus(str, enum.Enum):
     """Enumerates the allowed states for a ride."""
 
     PENDING = "PENDING"
+    AWAITING_RATING = "AWAITING_RATING"
     COMPLETE = "COMPLETE"
     CANCELED = "CANCELED"
 
@@ -171,26 +172,87 @@ def _error_payload(message: str) -> Dict[str, Any]:
     return {"output": None, "error": message}
 
 
+_RIDES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS rides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rider_id INTEGER NOT NULL,
+    driver_id INTEGER,
+    rider_session_id TEXT,
+    driver_session_id TEXT,
+    pickup_area TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    requested_time TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('PENDING','AWAITING_RATING','COMPLETE','CANCELED')),
+    comment TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(rider_id) REFERENCES users(id),
+    FOREIGN KEY(driver_id) REFERENCES users(id)
+);
+"""
+
+
+def _rides_table_missing_rating_state() -> bool:
+    cur = DB_CONNECTION.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='rides'"
+    )
+    row = cur.fetchone()
+    if not row or not row[0]:
+        return False
+    return "AWAITING_RATING" not in row[0]
+
+
+def _migrate_rides_table_for_rating_state() -> None:
+    cur = DB_CONNECTION.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='rides'"
+    )
+    if cur.fetchone() is None:
+        return
+    with DB_CONNECTION:
+        DB_CONNECTION.execute("PRAGMA foreign_keys=OFF")
+        try:
+            DB_CONNECTION.execute("ALTER TABLE rides RENAME TO rides_legacy_tmp")
+            DB_CONNECTION.execute(_RIDES_TABLE_SQL)
+            DB_CONNECTION.execute(
+                """
+                INSERT INTO rides (
+                    id,
+                    rider_id,
+                    driver_id,
+                    rider_session_id,
+                    driver_session_id,
+                    pickup_area,
+                    destination,
+                    requested_time,
+                    status,
+                    comment
+                )
+                SELECT
+                    id,
+                    rider_id,
+                    driver_id,
+                    rider_session_id,
+                    driver_session_id,
+                    pickup_area,
+                    destination,
+                    requested_time,
+                    CASE
+                        WHEN status NOT IN ('PENDING','AWAITING_RATING','COMPLETE','CANCELED')
+                            THEN 'PENDING'
+                        ELSE status
+                    END,
+                    comment
+                FROM rides_legacy_tmp
+                """
+            )
+            DB_CONNECTION.execute("DROP TABLE rides_legacy_tmp")
+        finally:
+            DB_CONNECTION.execute("PRAGMA foreign_keys=ON")
+
+
 def init_ride_schema() -> None:
     """Create the rides table with the expected columns and indexes."""
-    DB_CONNECTION.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rides (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            rider_id INTEGER NOT NULL,
-            driver_id INTEGER,
-            rider_session_id TEXT,
-            driver_session_id TEXT,
-            pickup_area TEXT NOT NULL,
-            destination TEXT NOT NULL,
-            requested_time TEXT NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('PENDING','COMPLETE','CANCELED')),
-            comment TEXT NOT NULL DEFAULT '',
-            FOREIGN KEY(rider_id) REFERENCES users(id),
-            FOREIGN KEY(driver_id) REFERENCES users(id)
-        );
-        """
-    )
+    DB_CONNECTION.execute(_RIDES_TABLE_SQL)
+    if _rides_table_missing_rating_state():
+        _migrate_rides_table_for_rating_state()
     DB_CONNECTION.execute(
         "CREATE INDEX IF NOT EXISTS idx_rides_rider_id ON rides(rider_id)"
     )

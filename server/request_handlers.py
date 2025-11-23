@@ -72,6 +72,17 @@ def handle_preview_ride_request(payload: Dict[str, Any]) -> ServerResponse:
     requested_time = str(payload["requested_time"]).strip()
     if not requested_time:
         return _error_server("requested_time cannot be empty in rider preview.")
+    override_lat: Optional[float] = None
+    override_lng: Optional[float] = None
+    override_area: Optional[str] = None
+    if not destination_is_aub:
+        try:
+            aub_lat, aub_lng, aub_label = _get_aub_coordinates()
+            override_lat = aub_lat
+            override_lng = aub_lng
+            override_area = aub_label
+        except Exception as exc:
+            return _error_server(f"Unable to resolve AUB coordinates: {exc}")
 
     driver_session_response = get_active_session(session_id=driver_session_id)
     if driver_session_response.status != db_msg_status.OK:
@@ -120,7 +131,13 @@ def handle_preview_ride_request(payload: Dict[str, Any]) -> ServerResponse:
     rider_profile = rider_profile_response.payload["output"]
 
     try:
-        trip_info = compute_driver_to_rider_info(driver_id, rider_id)
+        trip_info = compute_driver_to_rider_info(
+            driver_id,
+            rider_id,
+            pickup_lat=override_lat,
+            pickup_lng=override_lng,
+            pickup_area=override_area,
+        )
     except Exception as exc:  # surface matching/proximity errors cleanly
         return _error_server(f"Unable to compute trip details: {exc}")
 
@@ -245,6 +262,10 @@ def handle_cancel_ride_request(payload: Dict[str, Any]) -> ServerResponse:
         )
     if current_status == RideStatus.COMPLETE.value:
         return _error_server("Completed rides cannot be canceled.")
+    if current_status == RideStatus.AWAITING_RATING.value:
+        return _error_server(
+            "Rides awaiting ratings cannot be canceled.", status=msg_status.INVALID_INPUT
+        )
 
     db_update_response = update_ride(
         ride_id=str(ride_id),
@@ -914,6 +935,17 @@ def handle_rider_request_status(payload: Dict[str, Any]) -> ServerResponse:
         )
         return _error_server(err)
     request_payload = request_response.payload["output"]
+    ride_status = str(request_payload.get("ride_status") or "").upper()
+    if ride_status == RideStatus.COMPLETE.value:
+        return _ok_server(
+            payload={"request": None, "message": "Ride completed."},
+            resp_type=server_response_type.RIDE_UPDATED,
+        )
+    if ride_status == RideStatus.AWAITING_RATING.value:
+        return _ok_server(
+            payload={"request": request_payload, "message": "Please rate your driver to finish this ride."},
+            resp_type=server_response_type.RIDE_UPDATED,
+        )
     return _ok_server(
         payload=request_payload, resp_type=server_response_type.RIDE_UPDATED
     )
@@ -960,6 +992,9 @@ def handle_rider_confirm_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server(
             "Driver session is no longer available. Please send a new request."
         )
+    pickup_lat = confirmation_data.get("pickup_lat")
+    pickup_lng = confirmation_data.get("pickup_lng")
+    pickup_area = confirmation_data.get("pickup_area")
 
     ride_creation_response = create_ride(
         rider_id=rider_id,
@@ -982,7 +1017,13 @@ def handle_rider_confirm_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server("Ride creation did not return a ride_id.")
 
     try:
-        maps_info = compute_driver_to_rider_info(driver_id, rider_id)
+        maps_info = compute_driver_to_rider_info(
+            driver_id,
+            rider_id,
+            pickup_lat=pickup_lat,
+            pickup_lng=pickup_lng,
+            pickup_area=pickup_area,
+        )
     except Exception as exc:
         maps_info = {"error": str(exc)}
 
@@ -1057,5 +1098,140 @@ def handle_cancel_match_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server(err)
     return _ok_server(
         payload=cancel_response.payload["output"],
+        resp_type=server_response_type.RIDE_UPDATED,
+    )
+
+
+def handle_driver_complete_ride(payload: Dict[str, Any]) -> ServerResponse:
+    required = ["driver_session_id", "ride_id", "rider_rating"]
+    missing = [field for field in required if field not in payload]
+    if missing:
+        return _error_server(
+            f"Missing fields for ride completion: {', '.join(missing)}"
+        )
+    session_id = str(payload["driver_session_id"]).strip()
+    if not session_id:
+        return _error_server("driver_session_id cannot be empty.")
+    try:
+        ride_id = int(payload["ride_id"])
+    except (TypeError, ValueError):
+        return _error_server("ride_id must be numeric.")
+    try:
+        rider_rating = float(payload["rider_rating"])
+    except (TypeError, ValueError):
+        return _error_server("rider_rating must be a number between 0 and 5.")
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+    driver_id = session_response.payload["output"]["user_id"]
+    ride_response = get_ride(ride_id)
+    if ride_response.status != db_msg_status.OK:
+        err = (
+            ride_response.payload.get("error")
+            if ride_response.payload
+            else "Ride lookup failed."
+        )
+        return _error_server(f"Unable to complete ride: {err}")
+    ride_data = ride_response.payload.get("output") or {}
+    if int(ride_data.get("driver_id") or 0) != int(driver_id):
+        return _error_server(
+            "You are not assigned to this ride.", status=msg_status.INVALID_INPUT
+        )
+    current_status = str(ride_data.get("status") or "").upper()
+    if current_status == RideStatus.CANCELED.value:
+        return _error_server("Ride has already been canceled.")
+    if current_status == RideStatus.COMPLETE.value:
+        return _error_server("Ride has already been completed.")
+    if current_status == RideStatus.AWAITING_RATING.value:
+        return _error_server("Ride is already awaiting rider rating.")
+    comment = str(payload.get("comment") or "Driver marked ride as completed.")
+    update_response = update_ride(
+        ride_id=str(ride_id),
+        comment=comment,
+        status=RideStatus.AWAITING_RATING.value,
+        rider_rating=rider_rating,
+        driver_rating=None,
+    )
+    if update_response.status != db_msg_status.OK:
+        err = (
+            update_response.payload.get("error")
+            if update_response.payload
+            else "Unable to update ride."
+        )
+        return _error_server(err)
+    return _ok_server(
+        payload=update_response.payload["output"],
+        resp_type=server_response_type.RIDE_UPDATED,
+    )
+
+
+def handle_rider_rate_driver(payload: Dict[str, Any]) -> ServerResponse:
+    required = ["rider_session_id", "ride_id", "driver_rating"]
+    missing = [field for field in required if field not in payload]
+    if missing:
+        return _error_server(
+            f"Missing fields for driver rating: {', '.join(missing)}"
+        )
+    session_id = str(payload["rider_session_id"]).strip()
+    if not session_id:
+        return _error_server("rider_session_id cannot be empty.")
+    try:
+        ride_id = int(payload["ride_id"])
+    except (TypeError, ValueError):
+        return _error_server("ride_id must be numeric.")
+    try:
+        driver_rating = float(payload["driver_rating"])
+    except (TypeError, ValueError):
+        return _error_server("driver_rating must be a number between 0 and 5.")
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+    rider_id = session_response.payload["output"]["user_id"]
+    ride_response = get_ride(ride_id)
+    if ride_response.status != db_msg_status.OK:
+        err = (
+            ride_response.payload.get("error")
+            if ride_response.payload
+            else "Ride lookup failed."
+        )
+        return _error_server(f"Unable to rate ride: {err}")
+    ride_data = ride_response.payload.get("output") or {}
+    if int(ride_data.get("rider_id") or 0) != int(rider_id):
+        return _error_server(
+            "You are not the rider on this trip.", status=msg_status.INVALID_INPUT
+        )
+    current_status = str(ride_data.get("status") or RideStatus.PENDING.value)
+    if current_status != RideStatus.AWAITING_RATING.value:
+        return _error_server(
+            "Ride is not ready for driver rating.",
+            status=msg_status.INVALID_INPUT,
+        )
+    comment = str(payload.get("comment") or "Rider submitted driver rating.")
+    update_response = update_ride(
+        ride_id=str(ride_id),
+        comment=comment,
+        status=RideStatus.COMPLETE.value,
+        rider_rating=None,
+        driver_rating=driver_rating,
+    )
+    if update_response.status != db_msg_status.OK:
+        err = (
+            update_response.payload.get("error")
+            if update_response.payload
+            else "Unable to store driver rating."
+        )
+        return _error_server(err)
+    return _ok_server(
+        payload=update_response.payload["output"],
         resp_type=server_response_type.RIDE_UPDATED,
     )

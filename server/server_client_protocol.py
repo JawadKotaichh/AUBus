@@ -36,6 +36,8 @@ class client_request_type(enum.IntEnum):
     REGISTER_CHAT_ENDPOINT = 21
     LIST_ACTIVE_CHATS = 22
     REQUEST_P2P_CHAT = 23
+    COMPLETE_RIDE = 24
+    RATE_DRIVER = 25
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .db_connection import DB_CONNECTION
 from .protocol_db_server import DBResponse, db_response_type, db_msg_status
+from .ride import RideStatus
 
 
 def _ok_payload(output: Any) -> Dict[str, Any]:
@@ -128,6 +129,19 @@ def _candidate_payload(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _lookup_ride_status(ride_id: Optional[int]) -> Optional[str]:
+    if ride_id is None:
+        return None
+    try:
+        cur = DB_CONNECTION.execute("SELECT status FROM rides WHERE id = ?", (ride_id,))
+        row = cur.fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return row[0]
+
+
 def _row_to_request(row: Sequence[Any]) -> Dict[str, Any]:
     (
         request_id,
@@ -154,7 +168,7 @@ def _row_to_request(row: Sequence[Any]) -> Dict[str, Any]:
         created_at,
         updated_at,
     ) = row
-    return {
+    request = {
         "request_id": request_id,
         "rider_id": rider_id,
         "rider_session_id": rider_session_id,
@@ -179,6 +193,8 @@ def _row_to_request(row: Sequence[Any]) -> Dict[str, Any]:
         "created_at": created_at,
         "updated_at": updated_at,
     }
+    request["ride_status"] = _lookup_ride_status(ride_id)
+    return request
 
 
 def _fetch_current_candidate(request_id: int, sequence: int) -> Optional[Dict[str, Any]]:
@@ -528,6 +544,7 @@ def _fetch_driver_requests(
         SELECT
             r.id,
             r.rider_id,
+            r.ride_id,
             r.pickup_area,
             r.destination,
             r.requested_time,
@@ -543,9 +560,11 @@ def _fetch_driver_requests(
             c.assigned_at,
             c.responded_at,
             c.maps_url,
-            c.message
+            c.message,
+            d.status
         FROM ride_request_candidates AS c
         INNER JOIN ride_requests AS r ON r.id = c.request_id
+        LEFT JOIN rides AS d ON d.id = r.ride_id
         WHERE c.driver_id = ?
           AND c.status IN ({candidate_placeholders})
           AND r.status IN ({request_placeholders})
@@ -561,6 +580,7 @@ def _fetch_driver_requests(
         (
             request_id,
             rider_id,
+            ride_id,
             pickup_area,
             destination,
             requested_time,
@@ -577,12 +597,18 @@ def _fetch_driver_requests(
             responded_at,
             maps_url,
             candidate_message,
+            ride_status,
         ) = row
-        show_map = request_status == RideRequestStatus.COMPLETED.value
+        if ride_status == RideStatus.COMPLETE.value:
+            continue
+        show_map = (
+            request_status == RideRequestStatus.COMPLETED.value and maps_url is not None
+        )
         results.append(
             {
                 "request_id": request_id,
                 "rider_id": rider_id,
+                "ride_id": ride_id,
                 "pickup_area": pickup_area,
                 "destination": destination,
                 "requested_time": requested_time,
@@ -599,6 +625,7 @@ def _fetch_driver_requests(
                 "responded_at": responded_at,
                 "maps_url": maps_url if show_map else None,
                 "candidate_message": candidate_message,
+                "ride_status": ride_status,
             }
         )
     return results
@@ -836,6 +863,9 @@ def fetch_request_for_confirmation(request_id: int, rider_id: int) -> DBResponse
             rider_id,
             rider_session_id,
             destination_is_aub,
+            pickup_area,
+            pickup_lat,
+            pickup_lng,
             requested_time,
             current_driver_id,
             current_driver_session_id,
@@ -853,7 +883,7 @@ def fetch_request_for_confirmation(request_id: int, rider_id: int) -> DBResponse
             status=db_msg_status.NOT_FOUND,
             payload=_error_payload("Ride request not found."),
         )
-    if row[7] != RideRequestStatus.AWAITING_RIDER.value:
+    if row[10] != RideRequestStatus.AWAITING_RIDER.value:
         return DBResponse(
             type=db_response_type.ERROR,
             status=db_msg_status.INVALID_INPUT,
@@ -864,9 +894,12 @@ def fetch_request_for_confirmation(request_id: int, rider_id: int) -> DBResponse
         "rider_id": row[1],
         "rider_session_id": row[2],
         "destination_is_aub": bool(row[3]),
-        "requested_time": row[4],
-        "driver_id": row[5],
-        "driver_session_id": row[6],
+        "pickup_area": row[4],
+        "pickup_lat": row[5],
+        "pickup_lng": row[6],
+        "requested_time": row[7],
+        "driver_id": row[8],
+        "driver_session_id": row[9],
     }
     return DBResponse(
         type=db_response_type.RIDE_CREATED,

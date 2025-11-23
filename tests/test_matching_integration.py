@@ -275,6 +275,28 @@ class MatchingIntegrationTest(unittest.TestCase):
         self.assertIn("distance_km", info)
         self.assertIn("maps_url", info)
 
+    @unittest.skipUnless(
+        os.getenv("GOOGLE_MAPS_API_KEY"),
+        "Skipping Google Maps API integration test (API key not configured).",
+    )
+    def test_compute_driver_to_rider_info_with_pickup_override(self) -> None:
+        _debug("Testing compute_driver_to_rider_info with overridden pickup coords...")
+        override_lat = 33.901
+        override_lng = 35.476
+        pickup_area = "AUB Main Gate"
+        info = matching.compute_driver_to_rider_info(
+            driver_id=self.driver_id,
+            rider_id=self.rider_id,
+            pickup_lat=override_lat,
+            pickup_lng=override_lng,
+            pickup_area=pickup_area,
+        )
+        self.assertEqual(info["rider_area"], pickup_area)
+        self.assertIn(
+            f"destination={override_lat},{override_lng}",
+            info["maps_url"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

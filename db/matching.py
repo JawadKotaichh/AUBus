@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .user_db import fetch_online_drivers, get_user_location
 from .protocol_db_server import db_msg_status
@@ -13,7 +13,23 @@ from .maps_service import (
 from .zones import zone_for_coordinates
 
 
-def compute_driver_to_rider_info(driver_id: int, rider_id: int) -> dict:
+def _coerce_coordinate(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_driver_to_rider_info(
+    driver_id: int,
+    rider_id: int,
+    *,
+    pickup_lat: float | None = None,
+    pickup_lng: float | None = None,
+    pickup_area: str | None = None,
+) -> dict:
     # 1) Fetch locations
     driver_loc = get_user_location(driver_id)
     rider_loc = get_user_location(rider_id)
@@ -26,8 +42,27 @@ def compute_driver_to_rider_info(driver_id: int, rider_id: int) -> dict:
     d = driver_loc.payload["output"]
     r = rider_loc.payload["output"]
 
-    origin = coords_to_string(d["latitude"], d["longitude"])
-    destination = coords_to_string(r["latitude"], r["longitude"])
+    override_lat = _coerce_coordinate(pickup_lat)
+    override_lng = _coerce_coordinate(pickup_lng)
+
+    try:
+        driver_lat = float(d["latitude"])
+        driver_lng = float(d["longitude"])
+    except (TypeError, ValueError, KeyError):
+        raise RuntimeError("Driver location is missing or invalid.")
+
+    if override_lat is not None and override_lng is not None:
+        rider_lat = override_lat
+        rider_lng = override_lng
+    else:
+        try:
+            rider_lat = float(r["latitude"])
+            rider_lng = float(r["longitude"])
+        except (TypeError, ValueError, KeyError):
+            raise RuntimeError("Rider location is missing or invalid.")
+
+    origin = coords_to_string(driver_lat, driver_lng)
+    destination = coords_to_string(rider_lat, rider_lng)
 
     # 2) Ask Google Distance Matrix
     distance_km, duration_min, distance_text, duration_text = get_distance_and_duration(
@@ -41,7 +76,7 @@ def compute_driver_to_rider_info(driver_id: int, rider_id: int) -> dict:
 
     return {
         "driver_area": d["area"],
-        "rider_area": r["area"],
+        "rider_area": pickup_area or r["area"],
         "distance_km": distance_km,
         "duration_min": duration_min,
         "distance_text": distance_text,

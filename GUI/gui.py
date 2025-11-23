@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QHeaderView,
     QSizePolicy,
+    QInputDialog,
 )
 from PyQt6.QtMultimedia import QMediaCaptureSession, QAudioInput, QMediaRecorder
 
@@ -1086,6 +1087,8 @@ class RequestRidePage(QWidget):
         self.session_token: Optional[str] = None
         self.user_role: str = "passenger"
         self.active_request_id: Optional[int] = None
+        self.active_ride_id: Optional[int] = None
+        self._driver_rating_submitted: bool = False
         self._last_selected_driver: Optional[Dict[str, Any]] = None
 
         layout = QVBoxLayout(self)
@@ -1145,8 +1148,12 @@ class RequestRidePage(QWidget):
         self.confirm_btn.clicked.connect(self._confirm_active_request)
         self.cancel_btn = QPushButton("Cancel request")
         self.cancel_btn.clicked.connect(self._cancel_active_request)
+        self.rate_driver_btn = QPushButton("Rate driver")
+        self.rate_driver_btn.clicked.connect(self._rate_completed_ride)
+        self.rate_driver_btn.setVisible(False)
         button_bar.addWidget(self.confirm_btn)
         button_bar.addWidget(self.cancel_btn)
+        button_bar.addWidget(self.rate_driver_btn)
         self.confirm_btn.setVisible(False)
         self.cancel_btn.setVisible(False)
         status_panel.addWidget(self.status_heading)
@@ -1185,8 +1192,12 @@ class RequestRidePage(QWidget):
         self.open_map_btn = QPushButton("Open map directions")
         self.open_map_btn.setVisible(False)
         self.open_map_btn.clicked.connect(self._open_selected_request_map)
+        self.complete_ride_btn = QPushButton("Mark ride completed")
+        self.complete_ride_btn.setVisible(False)
+        self.complete_ride_btn.clicked.connect(self._mark_selected_ride_completed)
         driver_layout.addWidget(self.driver_info_label)
         driver_layout.addWidget(self.open_map_btn)
+        driver_layout.addWidget(self.complete_ride_btn)
         driver_layout.addWidget(QLabel("Active"))
         driver_layout.addWidget(self.active_list)
         self.driver_box.setVisible(False)
@@ -1212,6 +1223,7 @@ class RequestRidePage(QWidget):
         self.user_role = "driver" if is_driver else "passenger"
         self.auto_box.setVisible(not is_driver)
         self.driver_box.setVisible(is_driver)
+        self.rate_driver_btn.setVisible(False)
         if not self.session_token:
             self._update_auto_status(
                 "Unavailable",
@@ -1250,6 +1262,9 @@ class RequestRidePage(QWidget):
         self.session_token = None
         self.user_role = "passenger"
         self.active_request_id = None
+        self.active_ride_id = None
+        self.rate_driver_btn.setVisible(False)
+        self._driver_rating_submitted = False
         self.auto_results.clear()
         self._update_auto_status(
             "Signed out", "Log in to use automated requests.", error=False
@@ -1344,9 +1359,20 @@ class RequestRidePage(QWidget):
             self.confirm_btn.setVisible(False)
             self.cancel_btn.setVisible(False)
             self.active_request_id = None
+            self.active_ride_id = None
+            self.rate_driver_btn.setVisible(False)
+            self._driver_rating_submitted = False
             return
         self.active_request_id = request.get("request_id") or self.active_request_id
+        ride_id = request.get("ride_id")
+        if ride_id:
+            self.active_ride_id = ride_id
         status_text = (request.get("status") or "PENDING").replace("_", " ").title()
+        ride_status = str(request.get("ride_status") or "").upper()
+        if ride_status == "AWAITING_RATING":
+            status_text = "Awaiting rating"
+        elif ride_status == "COMPLETE":
+            status_text = "Completed"
         driver = request.get("current_driver") or request.get("driver")
         details: List[str] = []
         if driver:
@@ -1359,10 +1385,18 @@ class RequestRidePage(QWidget):
             details.append(message)
         elif request.get("message"):
             details.append(str(request.get("message")))
+        if ride_status == "AWAITING_RATING":
+            details.append("Please rate your driver to finish the ride.")
         self.status_heading.setText(f"Status: {status_text}")
         self.status_details.setText("\n".join(details) if details else "In progress.")
         self.cancel_btn.setVisible(True)
         self.confirm_btn.setVisible(status_text.upper() == "AWAITING RIDER")
+        can_rate = bool(
+            self.active_ride_id
+            and ride_status == "AWAITING_RATING"
+            and not self._driver_rating_submitted
+        )
+        self.rate_driver_btn.setVisible(can_rate)
 
     def _poll_rider_request_status(self) -> None:
         if not self.session_token or self.user_role == "driver":
@@ -1403,6 +1437,9 @@ class RequestRidePage(QWidget):
             )
         self.confirm_btn.setVisible(False)
         self.active_request_id = result.get("request_id")
+        self.active_ride_id = result.get("ride_id") or self.active_ride_id
+        self._driver_rating_submitted = False
+        self.rate_driver_btn.setVisible(False)
 
     def _cancel_active_request(self) -> None:
         if not self.session_token or not self.active_request_id:
@@ -1417,6 +1454,40 @@ class RequestRidePage(QWidget):
             return
         self._render_request_status(None, "Request cancelled.")
         self._rider_poll_timer.stop()
+        self.rate_driver_btn.setVisible(False)
+        self.active_ride_id = None
+        self._driver_rating_submitted = False
+
+    def _rate_completed_ride(self) -> None:
+        if not self.session_token or not self.active_ride_id:
+            return
+        rating, ok = QInputDialog.getDouble(
+            self,
+            "Rate driver",
+            "How would you rate your driver (1-5)?",
+            5.0,
+            1.0,
+            5.0,
+            1,
+        )
+        if not ok:
+            return
+        try:
+            self.api.rate_driver(
+                rider_session_id=self.session_token,
+                ride_id=int(self.active_ride_id),
+                driver_rating=rating,
+            )
+        except ServerAPIError as exc:
+            self.status_details.setText(str(exc))
+            return
+        self._driver_rating_submitted = True
+        self.rate_driver_btn.setVisible(False)
+        self.active_request_id = None
+        self.active_ride_id = None
+        self._render_request_status(
+            None, "Ride completed. Thanks for rating your driver."
+        )
 
     def _poll_driver_requests(self) -> None:
         if not self.session_token or self.user_role != "driver":
@@ -1489,6 +1560,8 @@ class RequestRidePage(QWidget):
             )
             self.open_map_btn.setVisible(False)
             self.open_map_btn.setProperty("maps_url", None)
+            self.complete_ride_btn.setVisible(False)
+            self.complete_ride_btn.setProperty("ride_id", None)
             return
         rider_name = data.get("rider_name") or data.get("rider_username") or "Rider"
         pickup_area = data.get("pickup_area") or "Unknown pickup"
@@ -1504,12 +1577,26 @@ class RequestRidePage(QWidget):
         message = data.get("message")
         if message:
             parts.append(str(message))
+        ride_status = str(data.get("ride_status") or "").upper()
+        if ride_status == "AWAITING_RATING":
+            parts.append("Waiting for rider rating.")
         self.driver_info_label.setText(" ".join(parts))
         maps_url = data.get("maps_url")
         status = str(data.get("status") or "").upper()
+        ride_status = ride_status or str(data.get("status") or "").upper()
         show_map = bool(allow_map and maps_url and status == "COMPLETED")
         self.open_map_btn.setVisible(show_map)
         self.open_map_btn.setProperty("maps_url", maps_url if show_map else None)
+        ride_id = data.get("ride_id")
+        can_complete = bool(
+            allow_map
+            and show_map
+            and self.user_role == "driver"
+            and ride_id
+            and ride_status not in {"AWAITING_RATING", "COMPLETE"}
+        )
+        self.complete_ride_btn.setVisible(can_complete)
+        self.complete_ride_btn.setProperty("ride_id", ride_id if can_complete else None)
 
     def _accept_selected_request(self) -> None:
         request = self._selected_pending_request()
@@ -1536,6 +1623,41 @@ class RequestRidePage(QWidget):
         if not maps_url:
             return
         QDesktopServices.openUrl(QUrl(str(maps_url)))
+
+    def _mark_selected_ride_completed(self) -> None:
+        ride_id = self.complete_ride_btn.property("ride_id")
+        if not ride_id or not self.session_token:
+            return
+        try:
+            ride_target = int(ride_id)
+        except (TypeError, ValueError):
+            ride_target = ride_id
+        rating, ok = QInputDialog.getDouble(
+            self,
+            "Rate rider",
+            "How would you rate this rider (1-5)?",
+            5.0,
+            1.0,
+            5.0,
+            1,
+        )
+        if not ok:
+            return
+        try:
+            self.api.complete_ride(
+                driver_session_id=self.session_token,
+                ride_id=ride_target,
+                rider_rating=rating,
+            )
+        except ServerAPIError as exc:
+            self.driver_info_label.setText(str(exc))
+            return
+        self.complete_ride_btn.setVisible(False)
+        self.complete_ride_btn.setProperty("ride_id", None)
+        self.driver_info_label.setText(
+            "Ride marked complete. Thanks for rating your rider."
+        )
+        self._poll_driver_requests()
 
     def _reject_selected_request(self) -> None:
         request = self._selected_pending_request()
