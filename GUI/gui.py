@@ -60,11 +60,13 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QSizePolicy,
     QInputDialog,
+    QMessageBox,
 )
 from PyQt6.QtMultimedia import QMediaCaptureSession, QAudioInput, QMediaRecorder
 
 from server_api import ServerAPI, ServerAPIError
 from p2p_chat import PeerChatNode, PeerChatError
+from location_service import CurrentLocationError, CurrentLocationService
 
 ALLOWED_ZONES: List[str] = [
     "Hamra",
@@ -773,11 +775,8 @@ class AuthPage(QWidget):
         self._register_lookup_timer.setSingleShot(True)
         self._register_lookup_timer.setInterval(400)
         self._status_timers: Dict[QLabel, QTimer] = {}
-        self._register_location: Optional[Dict[str, Any]] = None
-        self._register_area_populating = False
-        self._register_lookup_timer = QTimer(self)
-        self._register_lookup_timer.setSingleShot(True)
-        self._register_lookup_timer.setInterval(400)
+        self._location_permission_granted = False
+        self._location_service = CurrentLocationService(preferred_labels=ALLOWED_ZONES)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         tabs.addTab(self._build_login_tab(), "Log In")
@@ -828,6 +827,13 @@ class AuthPage(QWidget):
         self.reg_role.currentTextChanged.connect(self._update_register_role_state)
         self.reg_area = QLineEdit()
         self.reg_area.textChanged.connect(self._handle_register_area_text)
+        self.reg_use_location_btn = QPushButton("Use Current Location")
+        self.reg_use_location_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reg_use_location_btn.setToolTip(
+            "Allow AUBus to detect your approximate location and fill this field."
+        )
+        self.reg_use_location_btn.setAutoDefault(False)
+        self.reg_use_location_btn.clicked.connect(self._request_current_location)
         self._reg_suggestion_popup = SuggestionPopup(self.reg_area)
         self._reg_suggestion_popup.suggestionSelected.connect(
             self._apply_register_suggestion
@@ -844,7 +850,13 @@ class AuthPage(QWidget):
         form.addRow("Username", self.reg_username)
         form.addRow("Password", self.reg_password)
         form.addRow("Role", self.reg_role)
-        form.addRow("Area / zone", self.reg_area)
+        area_row = QWidget()
+        area_layout = QHBoxLayout(area_row)
+        area_layout.setContentsMargins(0, 0, 0, 0)
+        area_layout.setSpacing(8)
+        area_layout.addWidget(self.reg_area, 1)
+        area_layout.addWidget(self.reg_use_location_btn)
+        form.addRow("Area / zone", area_row)
         form.addRow("", self.reg_location_status)
         form.addRow(self.reg_schedule_editor)
 
@@ -1010,6 +1022,84 @@ class AuthPage(QWidget):
         elif triggered_by_user:
             self.reg_location_status.setText("No matching locations found.")
             self.reg_location_status.setStyleSheet("color: red;")
+
+    def _request_current_location(self) -> None:
+        self._register_lookup_timer.stop()
+        self._reg_suggestion_popup.hide()
+        if not self._location_permission_granted:
+            answer = QMessageBox.question(
+                self,
+                "Allow location access",
+                (
+                    "AUBus can auto-fill your area by using your network connection to "
+                    "request your approximate location.\n\n"
+                    "Do you allow AUBus to access your location for sign up?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.reg_location_status.setText("Location permission denied.")
+                self.reg_location_status.setStyleSheet("color: red;")
+                return
+            self._location_permission_granted = True
+        self.reg_use_location_btn.setEnabled(False)
+        self.reg_location_status.setText("Detecting your location...")
+        self.reg_location_status.setStyleSheet("color: #6B6F76;")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            try:
+                result = self._location_service.fetch()
+            except CurrentLocationError as exc:
+                logger.warning("Current location lookup failed: %s", exc)
+                self.reg_location_status.setText(str(exc))
+                self.reg_location_status.setStyleSheet("color: red;")
+                return
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Unexpected error while fetching current location: %s", exc)
+                self.reg_location_status.setText("Something went wrong while detecting your location.")
+                self.reg_location_status.setStyleSheet("color: red;")
+                return
+            self._apply_current_location(result.as_payload())
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.reg_use_location_btn.setEnabled(True)
+
+    def _apply_current_location(self, payload: Dict[str, Any]) -> None:
+        latitude = payload.get("latitude")
+        longitude = payload.get("longitude")
+        if latitude is None or longitude is None:
+            self.reg_location_status.setText("Current location lookup did not return coordinates.")
+            self.reg_location_status.setStyleSheet("color: red;")
+            return
+        try:
+            lat = float(latitude)
+            lng = float(longitude)
+        except (TypeError, ValueError):
+            self.reg_location_status.setText("Could not understand the detected coordinates.")
+            self.reg_location_status.setStyleSheet("color: red;")
+            return
+        formatted = str(payload.get("label") or "").strip() or "Current location"
+        entry = {
+            "formatted_address": formatted,
+            "primary_text": payload.get("city") or formatted or "Current location",
+            "secondary_text": payload.get("region") or payload.get("country") or "",
+            "latitude": lat,
+            "longitude": lng,
+        }
+        self._apply_register_suggestion(entry)
+        provider_url = str(payload.get("provider") or "").strip()
+        provider_hint = ""
+        if provider_url:
+            host = QUrl(provider_url).host() or provider_url
+            provider_hint = f" (via {host})"
+        accuracy_hint = ""
+        accuracy_value = payload.get("accuracy_km")
+        if isinstance(accuracy_value, (int, float)):
+            accuracy_hint = f" +/-{float(accuracy_value):.1f} km"
+        self.reg_location_status.setText(
+            f"Using current location: {formatted} (Lat {lat:.5f}, Lng {lng:.5f}){provider_hint}{accuracy_hint}"
+        )
+        self.reg_location_status.setStyleSheet("color: green;")
 
     def _clear_register_location(self, *, clear_status: bool = True) -> None:
         self._register_location = None
