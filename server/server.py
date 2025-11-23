@@ -31,6 +31,7 @@ from server.request_handlers import (
     handle_cancel_match_request,
     handle_driver_complete_ride,
     handle_rider_rate_driver,
+    handle_list_user_trips,
 )
 from server.chat_handlers import (
     handle_list_active_chats,
@@ -122,6 +123,8 @@ def dispatch_request(
             response = handle_driver_complete_ride(request_payload)
         case client_request_type.RATE_DRIVER:
             response = handle_rider_rate_driver(request_payload)
+        case client_request_type.LIST_TRIPS:
+            response = handle_list_user_trips(request_payload)
         case client_request_type.REGISTER_CHAT_ENDPOINT:
             response = handle_register_chat_endpoint(request_payload)
         case client_request_type.LIST_ACTIVE_CHATS:

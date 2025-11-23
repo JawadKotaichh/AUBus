@@ -1235,3 +1235,103 @@ def handle_rider_rate_driver(payload: Dict[str, Any]) -> ServerResponse:
         payload=update_response.payload["output"],
         resp_type=server_response_type.RIDE_UPDATED,
     )
+
+
+def handle_list_user_trips(payload: Dict[str, Any]) -> ServerResponse:
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        return _error_server("session_id is required to list trips.")
+    _ = payload.get("filters")  # Placeholder for future server-side filtering.
+
+    session_response = get_active_session(session_id=session_id)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error."
+        )
+        return _error_server(f"Session verification failed: {err}")
+
+    user_id = session_response.payload["output"]["user_id"]
+    profile_response = get_user_profile(user_id)
+    profile_payload = (
+        profile_response.payload.get("output") if profile_response.payload else {}
+    )
+    is_driver = bool(profile_payload.get("is_driver"))
+
+    partner_cache: Dict[int, Dict[str, Any]] = {}
+
+    def _lookup_user_summary(user_key: Optional[int]) -> Dict[str, Any]:
+        if not user_key:
+            return {}
+        if user_key in partner_cache:
+            return partner_cache[user_key]
+        summary_response = get_user_profile(user_key)
+        if summary_response.status == db_msg_status.OK:
+            partner = summary_response.payload.get("output") or {}
+        else:
+            partner = {"user_id": user_key}
+        partner_cache[user_key] = partner
+        return partner
+
+    def _decorate_trip_rows(
+        trips: List[Dict[str, Any]], role: str
+    ) -> List[Dict[str, Any]]:
+        decorated: List[Dict[str, Any]] = []
+        for trip in trips:
+            partner_id = (
+                trip.get("driver_id") if role == "rider" else trip.get("rider_id")
+            )
+            partner = _lookup_user_summary(partner_id)
+            decorated.append(
+                {
+                    "ride_id": trip.get("id"),
+                    "role": role,
+                    "partner_id": partner_id,
+                    "partner_name": partner.get("name") or partner.get("username"),
+                    "partner_username": partner.get("username"),
+                    "pickup_area": trip.get("pickup_area"),
+                    "destination": trip.get("destination"),
+                    "requested_time": trip.get("requested_time"),
+                    "status": trip.get("status"),
+                    "comment": trip.get("comment"),
+                }
+            )
+        return decorated
+
+    rider_trips_resp = get_rides_rider(user_id)
+    if rider_trips_resp.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
+        err = (
+            rider_trips_resp.payload.get("error")
+            if rider_trips_resp.payload
+            else "Unable to load rider trips."
+        )
+        return _error_server(err)
+    rider_trips_raw = rider_trips_resp.payload.get("output") or []
+    rider_trips = (
+        _decorate_trip_rows(rider_trips_raw, "rider")
+        if isinstance(rider_trips_raw, list)
+        else []
+    )
+
+    driver_trips: List[Dict[str, Any]] = []
+    if is_driver:
+        driver_trips_resp = get_rides_driver(user_id)
+        if driver_trips_resp.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
+            err = (
+                driver_trips_resp.payload.get("error")
+                if driver_trips_resp.payload
+                else "Unable to load driver trips."
+            )
+            return _error_server(err)
+        driver_trips_raw = driver_trips_resp.payload.get("output") or []
+        if isinstance(driver_trips_raw, list):
+            driver_trips = _decorate_trip_rows(driver_trips_raw, "driver")
+
+    payload_out = {
+        "user_id": user_id,
+        "is_driver": is_driver,
+        "as_rider": rider_trips,
+        "as_driver": driver_trips,
+    }
+    return _ok_server(payload=payload_out, resp_type=server_response_type.USER_FOUND)

@@ -1,4 +1,5 @@
-"""Entry point for the AUBus PyQt client."""
+"""Entry point for the AUBus PyQt client with modern themes."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,16 @@ from server_api import AuthBackendServerAPI, ServerAPI
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the AUBus desktop client.")
+    parser = argparse.ArgumentParser(
+        description="Run the AUBus desktop client with modern UI.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Theme Options:
+  modern_light    Clean, bright interface with blue accents (default)
+  modern_dark     Sleek dark mode with vibrant highlights
+  ocean           Professional cyan/teal theme inspired by water
+        """,
+    )
     parser.add_argument(
         "--auth-backend",
         action="store_true",
@@ -34,26 +44,31 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--theme",
-        default="bolt_light",
-        choices=["bolt_light", "bolt_dark", "light", "dark"],
-        help="Initial GUI theme.",
+        default="modern_light",
+        choices=["modern_light", "modern_dark", "ocean"],
+        help="Choose your preferred theme (default: modern_light).",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
+
+    print(f"🚗 Starting AUBus with theme: {args.theme}")
+
     if args.auth_backend:
         api: ServerAPI = ServerAPI(
             host=args.server_host, port=args.server_port, timeout=args.timeout
         )
+        print(f"✓ Connected to backend at {args.server_host}:{args.server_port}")
     else:
         api = AuthBackendServerAPI(
             host=args.server_host, port=args.server_port, timeout=args.timeout
         )
+        print("✓ Using mock API for development")
+
     run(api=api, theme=args.theme)
 
 
 if __name__ == "__main__":
     main()
-

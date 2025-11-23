@@ -38,6 +38,7 @@ class client_request_type(enum.IntEnum):
     REQUEST_P2P_CHAT = 23
     COMPLETE_RIDE = 24
     RATE_DRIVER = 25
+    LIST_TRIPS = 26
 
 
 @dataclass(frozen=True)

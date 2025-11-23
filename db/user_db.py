@@ -946,18 +946,32 @@ def get_rides_driver(user_id: int) -> DBResponse:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
-        cur.execute("""SELECT * FROM rides WHERE driver_id=?""", (user_id,))
-        rides = cur.fetchall()
-        if rides:
-            return DBResponse(
-                db_response_type.RIDES_FOUND,
-                db_msg_status.OK,
-                _payload_from_status(db_msg_status.OK, str(rides)),
-            )
+        cur.execute(
+            """
+            SELECT
+                id,
+                rider_id,
+                driver_id,
+                pickup_area,
+                destination,
+                requested_time,
+                status,
+                comment
+            FROM rides
+            WHERE driver_id=?
+            ORDER BY requested_time DESC, id DESC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        columns = [col[0] for col in cur.description]
+        rides = [
+            {columns[idx]: value for idx, value in enumerate(row)} for row in rows
+        ]
         return DBResponse(
             db_response_type.RIDES_FOUND,
-            db_msg_status.NOT_FOUND,
-            _payload_from_status(db_msg_status.NOT_FOUND, "No driver rides found."),
+            db_msg_status.OK,
+            _payload_from_status(db_msg_status.OK, rides),
         )
     except Exception as e:
         return DBResponse(
@@ -971,18 +985,32 @@ def get_rides_rider(user_id: int) -> DBResponse:
     try:
         conn = DB_CONNECTION
         cur = conn.cursor()
-        cur.execute("""SELECT * FROM rides WHERE rider_id=?""", (user_id,))
-        rides = cur.fetchall()
-        if rides:
-            return DBResponse(
-                db_response_type.RIDES_FOUND,
-                db_msg_status.OK,
-                _payload_from_status(db_msg_status.OK, str(rides)),
-            )
+        cur.execute(
+            """
+            SELECT
+                id,
+                rider_id,
+                driver_id,
+                pickup_area,
+                destination,
+                requested_time,
+                status,
+                comment
+            FROM rides
+            WHERE rider_id=?
+            ORDER BY requested_time DESC, id DESC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        columns = [col[0] for col in cur.description]
+        rides = [
+            {columns[idx]: value for idx, value in enumerate(row)} for row in rows
+        ]
         return DBResponse(
             db_response_type.RIDES_FOUND,
-            db_msg_status.NOT_FOUND,
-            _payload_from_status(db_msg_status.NOT_FOUND, "No rider rides found."),
+            db_msg_status.OK,
+            _payload_from_status(db_msg_status.OK, rides),
         )
     except Exception as e:
         return DBResponse(

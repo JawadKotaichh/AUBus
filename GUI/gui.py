@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPointF, QDateTime, QTime, QSize, QRectF, QUrl
+from PyQt6.QtCore import (
+    Qt,
+    pyqtSignal,
+    QTimer,
+    QPoint,
+    QPointF,
+    QDateTime,
+    QTime,
+    QSize,
+    QRectF,
+    QUrl,
+)
 from PyQt6.QtGui import (
     QIcon,
     QColor,
@@ -43,7 +55,6 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QTimeEdit,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
     QHeaderView,
@@ -52,7 +63,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtMultimedia import QMediaCaptureSession, QAudioInput, QMediaRecorder
 
-from server_api import AuthBackendServerAPI, MockServerAPI, ServerAPI, ServerAPIError
+from server_api import AuthBackendServerAPI, ServerAPI, ServerAPIError
 from p2p_chat import PeerChatNode, PeerChatError
 
 ALLOWED_ZONES: List[str] = [
@@ -374,6 +385,7 @@ class DriverScheduleEditor(QGroupBox):
         except ValueError:
             return self._default_departure
 
+
 def _extract_place_texts(entry: Dict[str, Any]) -> tuple[str, str]:
     primary = (
         entry.get("primary_text")
@@ -419,7 +431,7 @@ THEME_PALETTES = {
         "card": "#FFFFFF",
         "border": "#E8E8E8",
         "list_bg": "#F7F8F9",
-        "accent": "#34BB78",      # Bolt Green
+        "accent": "#34BB78",  # Bolt Green
         "accent_alt": "#169A63",  # darker for hover/active
         "button_text": "#FFFFFF",
         "input_bg": "#FFFFFF",
@@ -432,7 +444,6 @@ THEME_PALETTES = {
         "stat_bg": "#34BB78",
         "stat_text": "#FFFFFF",
     },
-
     # --- Bolt-inspired dark theme ---
     "bolt_dark": {
         "text": "#F5F7F6",
@@ -454,7 +465,6 @@ THEME_PALETTES = {
         "stat_bg": "#1E3A2E",
         "stat_text": "#E9FFF4",
     },
-
     "light": {
         "text": "#1A1A1B",
         "muted": "#6D6F73",
@@ -649,11 +659,15 @@ class StatBadge(QLabel):
 
 
 class MessageBubble(QWidget):
-    def __init__(self, message: Dict[str, Any], palette: Dict[str, str], is_self: bool = False):
+    def __init__(
+        self, message: Dict[str, Any], palette: Dict[str, str], is_self: bool = False
+    ):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignmentFlag.AlignRight if is_self else Qt.AlignmentFlag.AlignLeft)
+        layout.setAlignment(
+            Qt.AlignmentFlag.AlignRight if is_self else Qt.AlignmentFlag.AlignLeft
+        )
 
         media_type = str(message.get("media_type") or "text").lower()
         bubble_widget = QWidget()
@@ -708,13 +722,16 @@ class MessageBubble(QWidget):
         caption = QLabel((message.get("sender") or "peer").capitalize())
         caption.setObjectName("muted")
         caption.setStyleSheet("font-size: 8pt;")
-        caption.setAlignment(Qt.AlignmentFlag.AlignRight if is_self else Qt.AlignmentFlag.AlignLeft)
+        caption.setAlignment(
+            Qt.AlignmentFlag.AlignRight if is_self else Qt.AlignmentFlag.AlignLeft
+        )
 
         layout.addWidget(bubble_widget)
         layout.addWidget(caption)
 
 
 # Auth -------------------------------------------------------------------------
+
 
 class AuthPage(QWidget):
     authenticated = pyqtSignal(dict)
@@ -845,7 +862,9 @@ class AuthPage(QWidget):
         role = self.reg_role.currentText()
         schedule_payload = None
         if role == "driver":
-            schedule_payload, schedule_error = self.reg_schedule_editor.collect_schedule()
+            schedule_payload, schedule_error = (
+                self.reg_schedule_editor.collect_schedule()
+            )
             if schedule_error:
                 self._flash_status(self.reg_status, schedule_error, "red")
                 return
@@ -891,7 +910,9 @@ class AuthPage(QWidget):
             return
 
         # Auto-login right after successful registration
-        logger.info("GUI register succeeded for %s. Auto-login starting.", username or "<empty>")
+        logger.info(
+            "GUI register succeeded for %s. Auto-login starting.", username or "<empty>"
+        )
         try:
             user = self.api.login(
                 username=username,
@@ -904,7 +925,7 @@ class AuthPage(QWidget):
             )
             self._flash_status(
                 self.reg_status,
-                f"Welcome, {user.get('username','')}! Account created and logged in.",
+                f"Welcome, {user.get('username', '')}! Account created and logged in.",
                 "green",
             )
             self.authenticated.emit(user)
@@ -975,9 +996,7 @@ class AuthPage(QWidget):
         self.reg_area.blockSignals(False)
         self._register_lookup_timer.stop()
         self._register_area_populating = False
-        self.reg_location_status.setText(
-            f"Lat {latitude:.5f}, Lng {longitude:.5f}"
-        )
+        self.reg_location_status.setText(f"Lat {latitude:.5f}, Lng {longitude:.5f}")
         self.reg_location_status.setStyleSheet("color: green;")
         self._reg_suggestion_popup.hide()
 
@@ -994,6 +1013,7 @@ class AuthPage(QWidget):
 
 
 # Dashboard --------------------------------------------------------------------
+
 
 class DashboardPage(QWidget):
     def __init__(self, api: ServerAPI):
@@ -1064,14 +1084,10 @@ class DashboardPage(QWidget):
             self.rides_list.addItem(item)
 
         pending = sum(
-            1
-            for ride in rides
-            if str(ride.get("status", "")).lower() == "pending"
+            1 for ride in rides if str(ride.get("status", "")).lower() == "pending"
         )
         accepted = sum(
-            1
-            for ride in rides
-            if str(ride.get("status", "")).lower() == "accepted"
+            1 for ride in rides if str(ride.get("status", "")).lower() == "accepted"
         )
         self.pending_badge.update_value("Pending requests", str(pending))
         self.accepted_badge.update_value("Accepted rides", str(accepted))
@@ -1079,6 +1095,7 @@ class DashboardPage(QWidget):
 
 
 # Request ride -----------------------------------------------------------------
+
 
 class RequestRidePage(QWidget):
     def __init__(self, api: ServerAPI):
@@ -1432,9 +1449,7 @@ class RequestRidePage(QWidget):
         if maps_info:
             link = maps_info.get("maps_url") or ""
             extra = f" Map: {link}" if link else ""
-            self.status_details.setText(
-                f"Ride confirmed. Driver is en route.{extra}"
-            )
+            self.status_details.setText(f"Ride confirmed. Driver is en route.{extra}")
         self.confirm_btn.setVisible(False)
         self.active_request_id = result.get("request_id")
         self.active_ride_id = result.get("ride_id") or self.active_ride_id
@@ -1494,9 +1509,7 @@ class RequestRidePage(QWidget):
             self._driver_poll_timer.stop()
             return
         try:
-            queue = self.api.fetch_driver_requests(
-                driver_session_id=self.session_token
-            )
+            queue = self.api.fetch_driver_requests(driver_session_id=self.session_token)
         except ServerAPIError as exc:
             self.pending_list.clear()
             self.pending_list.addItem(str(exc))
@@ -1509,9 +1522,7 @@ class RequestRidePage(QWidget):
             self.pending_list.addItem(item)
         self.active_list.clear()
         for request in queue.get("active", []):
-            label = (
-                f"#{request.get('request_id')} {request.get('rider_name')} • {request.get('status')}"
-            )
+            label = f"#{request.get('request_id')} {request.get('rider_name')} • {request.get('status')}"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, request)
             self.active_list.addItem(item)
@@ -1555,9 +1566,7 @@ class RequestRidePage(QWidget):
     ) -> None:
         data = self._request_from_item(item)
         if not data:
-            self.driver_info_label.setText(
-                "Select a request to view rider details."
-            )
+            self.driver_info_label.setText("Select a request to view rider details.")
             self.open_map_btn.setVisible(False)
             self.open_map_btn.setProperty("maps_url", None)
             self.complete_ride_btn.setVisible(False)
@@ -1700,6 +1709,7 @@ class RequestRidePage(QWidget):
 
 # Driver search ----------------------------------------------------------------
 
+
 class SearchDriverPage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
@@ -1799,7 +1809,9 @@ class SearchDriverPage(QWidget):
             btn.setStyleSheet(DRIVER_ROW_BUTTON_STYLE)
             btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             btn.setFixedWidth(130)
-            btn.clicked.connect(lambda _=False, d=driver: self._handle_request_driver(d))
+            btn.clicked.connect(
+                lambda _=False, d=driver: self._handle_request_driver(d)
+            )
             button_container = QWidget()
             btn_layout = QHBoxLayout(button_container)
             btn_layout.setContentsMargins(0, 0, 0, 0)
@@ -1838,6 +1850,7 @@ class SearchDriverPage(QWidget):
 
 
 # Chats ------------------------------------------------------------------------
+
 
 class ChatsPage(QWidget):
     def __init__(self, api: ServerAPI, chat_service: PeerChatNode):
@@ -1911,7 +1924,9 @@ class ChatsPage(QWidget):
         self._media_recorder = QMediaRecorder()
         self._audio_session.setAudioInput(self._audio_input)
         self._audio_session.setRecorder(self._media_recorder)
-        self._media_recorder.recorderStateChanged.connect(self._on_recorder_state_changed)
+        self._media_recorder.recorderStateChanged.connect(
+            self._on_recorder_state_changed
+        )
         self._recording_path: Optional[str] = None
 
     def set_user(self, user: Optional[Dict[str, Any]]) -> None:
@@ -1946,11 +1961,11 @@ class ChatsPage(QWidget):
             self.chat_list.addItem(f"Unable to load chats: {exc}")
             return
         self.chat_entries = {chat["chat_id"]: chat for chat in chats}
-        
+
         # Preserve selection if possible
         current_row = self.chat_list.currentRow()
         self.chat_list.clear()
-        
+
         if not chats:
             self.chat_list.addItem("No confirmed rides available yet.")
             if self.current_chat_id:
@@ -1967,7 +1982,7 @@ class ChatsPage(QWidget):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, chat)
             self.chat_list.addItem(item)
-            
+
             # Restore selection
             if self.current_chat_id == chat_id:
                 item.setSelected(True)
@@ -2002,7 +2017,7 @@ class ChatsPage(QWidget):
         self.voice_btn.setEnabled(is_ready)
         self.photo_btn.setEnabled(is_ready)
         if not is_ready:
-             self.chat_status.setText("Waiting for ride confirmation...")
+            self.chat_status.setText("Waiting for ride confirmation...")
 
     def _disable_chat_ui(self, reason: str) -> None:
         self.message_input.setEnabled(False)
@@ -2014,7 +2029,9 @@ class ChatsPage(QWidget):
     def _ensure_handshake(self, chat: Dict[str, Any]) -> None:
         if not self.session_token or not chat.get("ready"):
             if not chat.get("ready"):
-                self.chat_status.setText("Both rider and driver must confirm the ride before chatting.")
+                self.chat_status.setText(
+                    "Both rider and driver must confirm the ride before chatting."
+                )
             return
         chat_id = chat["chat_id"]
         if self.chat_service.is_ready(chat_id):
@@ -2065,7 +2082,10 @@ class ChatsPage(QWidget):
         )
 
     def _toggle_recording(self) -> None:
-        if self._media_recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+        if (
+            self._media_recorder.recorderState()
+            == QMediaRecorder.RecorderState.RecordingState
+        ):
             self._media_recorder.stop()
         else:
             if not self.current_chat_id:
@@ -2073,6 +2093,7 @@ class ChatsPage(QWidget):
             # Create a temp file path
             import tempfile
             import os
+
             fd, path = tempfile.mkstemp(suffix=".m4a")
             os.close(fd)
             self._recording_path = path
@@ -2092,7 +2113,7 @@ class ChatsPage(QWidget):
             self.message_input.setEnabled(True)
             self.send_btn.setEnabled(True)
             self.photo_btn.setEnabled(True)
-            
+
             if self._recording_path:
                 # Send the recorded file
                 sender = self._sender_name()
@@ -2100,15 +2121,15 @@ class ChatsPage(QWidget):
                     message = self.chat_service.send_voice(
                         self.current_chat_id,
                         sender=sender,
-                        file_path=self._recording_path
+                        file_path=self._recording_path,
                     )
                     self._append_local_message(self.current_chat_id, message)
                 except PeerChatError as exc:
                     self.chat_status.setText(str(exc))
                 finally:
-                    # Cleanup temp file? 
-                    # PeerChatNode reads it immediately, but we might want to keep it 
-                    # or let the OS handle temp cleanup. 
+                    # Cleanup temp file?
+                    # PeerChatNode reads it immediately, but we might want to keep it
+                    # or let the OS handle temp cleanup.
                     # For now, we leave it as PeerChatNode might need it if it does async reading (it doesn't, it reads bytes immediately).
                     pass
                 self._recording_path = None
@@ -2177,87 +2198,215 @@ class ChatsPage(QWidget):
 
 # Trips ------------------------------------------------------------------------
 
+
 class TripsPage(QWidget):
     def __init__(self, api: ServerAPI):
         super().__init__()
         self.api = api
+        self.session_token: Optional[str] = None
+        self.user_role: str = "passenger"
+        self._trips_cache: List[Dict[str, Any]] = []
 
         layout = QVBoxLayout(self)
 
-        filter_box = QGroupBox("Filters (driver, rating, date)")
+        filter_box = QGroupBox("Filter trips")
         filter_layout = QGridLayout(filter_box)
-        self.driver_input = QLineEdit()
-        self.rating_input = QDoubleSpinBox()
-        self.rating_input.setRange(0, 5)
+        self.role_filter = QComboBox()
+        self.role_filter.addItem("All roles", "all")
+        self.role_filter.addItem("Rider", "rider")
+        self.role_filter.addItem("Driver", "driver")
+        self.partner_input = QLineEdit()
+        self.partner_input.setPlaceholderText("Partner name or username")
+        self.status_filter = QComboBox()
+        self.status_filter.addItem("Any status", "any")
+        self.status_filter.addItem("Pending", "PENDING")
+        self.status_filter.addItem("Awaiting rating", "AWAITING_RATING")
+        self.status_filter.addItem("Complete", "COMPLETE")
+        self.status_filter.addItem("Canceled", "CANCELED")
         self.date_input = QDateEdit()
         self.date_input.setCalendarPopup(True)
         self.date_input.setSpecialValueText("Any date")
         self.date_input.setDate(self.date_input.minimumDate())
 
-        filter_layout.addWidget(QLabel("Driver"), 0, 0)
-        filter_layout.addWidget(self.driver_input, 0, 1)
-        filter_layout.addWidget(QLabel("Min rating"), 1, 0)
-        filter_layout.addWidget(self.rating_input, 1, 1)
-        filter_layout.addWidget(QLabel("Date after"), 2, 0)
-        filter_layout.addWidget(self.date_input, 2, 1)
-
-        self.refresh_btn = QPushButton("View trips")
+        self.refresh_btn = QPushButton("Refresh trips")
         self.refresh_btn.clicked.connect(self.refresh)
-        filter_layout.addWidget(self.refresh_btn, 3, 0, 1, 2)
+        self.role_filter.currentIndexChanged.connect(lambda _: self._apply_filters())
+        self.status_filter.currentIndexChanged.connect(lambda _: self._apply_filters())
+        self.partner_input.returnPressed.connect(self._apply_filters)
+        self.date_input.dateChanged.connect(lambda _: self._apply_filters())
+        self.refresh_btn.setEnabled(False)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Driver", "Rating", "Date"])
+        filter_layout.addWidget(QLabel("Role"), 0, 0)
+        filter_layout.addWidget(self.role_filter, 0, 1)
+        filter_layout.addWidget(QLabel("Partner"), 1, 0)
+        filter_layout.addWidget(self.partner_input, 1, 1)
+        filter_layout.addWidget(QLabel("Status"), 2, 0)
+        filter_layout.addWidget(self.status_filter, 2, 1)
+        filter_layout.addWidget(QLabel("Date after"), 3, 0)
+        filter_layout.addWidget(self.date_input, 3, 1)
+        filter_layout.addWidget(self.refresh_btn, 4, 0, 1, 2)
+
+        self.status_label = QLabel("Log in to view your past rides.")
+        self.status_label.setStyleSheet("color: #5c636a;")
+
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["Role", "Partner", "Pickup", "Destination", "Requested at", "Status", "Notes"]
+        )
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
         layout.addWidget(filter_box)
+        layout.addWidget(self.status_label)
         layout.addWidget(self.table)
 
+    def set_user_context(self, user: Dict[str, Any]) -> None:
+        self.session_token = user.get("session_token")
+        role_value = (user.get("role") or "").strip().lower()
+        self.user_role = "driver" if role_value == "driver" or user.get("is_driver") else "passenger"
+        self.refresh_btn.setEnabled(bool(self.session_token))
+
+    def clear_user_context(self) -> None:
+        self.session_token = None
+        self.user_role = "passenger"
+        self._trips_cache = []
+        self.table.setRowCount(0)
+        self.status_label.setText("Log in to view your past rides.")
+
     def refresh(self) -> None:
+        if not self.session_token:
+            self.status_label.setText("Log in to view your past rides.")
+            self.table.setRowCount(0)
+            return
+
         filters: Dict[str, Any] = {}
-        if self.driver_input.text().strip():
-            filters["driver"] = self.driver_input.text().strip()
-        if self.rating_input.value() > 0:
-            filters["rating"] = self.rating_input.value()
+        partner = self.partner_input.text().strip()
+        if partner:
+            filters["partner"] = partner
+        status_value = self.status_filter.currentData()
+        if status_value and status_value != "any":
+            filters["status"] = status_value
         if self.date_input.date() != self.date_input.minimumDate():
             filters["date_after"] = self.date_input.date().toString(Qt.DateFormat.ISODate)
 
         try:
-            trips = self.api.fetch_trips(filters=filters)
+            response = self.api.fetch_trips(
+                session_token=self.session_token,
+                filters=filters,
+            )
         except ServerAPIError as exc:
+            self.status_label.setText(str(exc))
+            self.status_label.setStyleSheet("color: red;")
             self.table.setRowCount(0)
-            self.table.setColumnCount(1)
-            self.table.setHorizontalHeaderLabels(["Error"])
-            self.table.insertRow(0)
-            err = QTableWidgetItem(str(exc))
-            err.setFlags(err.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(0, 0, err)
             return
 
-        filtered = [
-            trip
-            for trip in trips
-            if (
-                (not filters.get("driver") or filters["driver"].lower() in trip["driver"].lower())
-                and (not filters.get("rating") or trip["rating"] >= filters["rating"])
-                and (not filters.get("date_after") or trip["date"] >= filters["date_after"])
-            )
+        trips: List[Dict[str, Any]] = []
+        for group, role in (("as_rider", "rider"), ("as_driver", "driver")):
+            for trip in response.get(group, []) or []:
+                normalized = dict(trip)
+                normalized["role"] = normalized.get("role") or role
+                trips.append(normalized)
+
+        self._trips_cache = trips
+        if trips:
+            self.status_label.setText(f"{len(trips)} trip(s) loaded.")
+            self.status_label.setStyleSheet("color: #2f6b3f;")
+        else:
+            self.status_label.setText("No trips recorded yet.")
+            self.status_label.setStyleSheet("color: #5c636a;")
+        self._apply_filters()
+
+    def _apply_filters(self) -> None:
+        role_filter = self.role_filter.currentData()
+        partner_filter = self.partner_input.text().strip().lower()
+        status_filter = self.status_filter.currentData()
+        date_filter = (
+            self.date_input.date()
+            if self.date_input.date() != self.date_input.minimumDate()
+            else None
+        )
+
+        filtered: List[Dict[str, Any]] = []
+        for trip in self._trips_cache:
+            role_value = str(trip.get("role") or "").lower()
+            if role_filter != "all" and role_value != role_filter:
+                continue
+            if partner_filter:
+                partner_blob = " ".join(
+                    [
+                        str(trip.get("partner_name") or ""),
+                        str(trip.get("partner_username") or ""),
+                    ]
+                ).lower()
+                if partner_filter not in partner_blob:
+                    continue
+            if status_filter != "any":
+                if str(trip.get("status") or "").upper() != status_filter:
+                    continue
+            if date_filter:
+                requested = self._parse_datetime(trip.get("requested_time"))
+                if requested and requested.date() < date_filter.toPyDate():
+                    continue
+            filtered.append(trip)
+
+        self._populate_table(filtered)
+
+    def _populate_table(self, trips: List[Dict[str, Any]]) -> None:
+        headers = [
+            "Role",
+            "Partner",
+            "Pickup",
+            "Destination",
+            "Requested at",
+            "Status",
+            "Notes",
         ]
+        self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setRowCount(len(trips))
 
-        def ro(text: str) -> QTableWidgetItem:
-            it = QTableWidgetItem(text)
-            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            return it
+        for row, trip in enumerate(trips):
+            requested = self._parse_datetime(trip.get("requested_time"))
+            requested_text = (
+                requested.strftime("%Y-%m-%d %H:%M") if requested else str(trip.get("requested_time") or "")
+            )
+            partner = trip.get("partner_name") or trip.get("partner_username") or "Unknown"
+            entries = [
+                trip.get("role", "").title(),
+                partner,
+                trip.get("pickup_area") or "Unknown",
+                trip.get("destination") or "Unknown",
+                requested_text,
+                str(trip.get("status") or "").replace("_", " ").title(),
+                trip.get("comment") or "",
+            ]
+            for col, value in enumerate(entries):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, col, item)
 
-        self.table.setRowCount(len(filtered))
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Driver", "Rating", "Date"])
-        for row, trip in enumerate(filtered):
-            self.table.setItem(row, 0, ro(trip["driver"]))
-            self.table.setItem(row, 1, ro(str(trip["rating"])))
-            self.table.setItem(row, 2, ro(trip["date"]))
+        if not trips:
+            self.table.setRowCount(0)
+
+    @staticmethod
+    def _parse_datetime(raw: Any) -> Optional[datetime]:
+        if not raw:
+            return None
+        text = str(raw)
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        return None
 
 
 # Profile ----------------------------------------------------------------------
+
 
 class ProfilePage(QWidget):
     theme_changed = pyqtSignal(str)
@@ -2501,7 +2650,9 @@ class ProfilePage(QWidget):
 
     def _save(self) -> None:
         if not self.user or not self.user.get("user_id"):
-            self._flash_status(self.status_label, "No authenticated user to update.", "red")
+            self._flash_status(
+                self.status_label, "No authenticated user to update.", "red"
+            )
             logger.error("Profile update attempted without a logged-in user.")
             return
         email = self.email_input.text().strip()
@@ -2535,13 +2686,14 @@ class ProfilePage(QWidget):
             payload["latitude"] = self._selected_area_coords["latitude"]
             payload["longitude"] = self._selected_area_coords["longitude"]
         if self.role_combo.currentText() == "driver":
-            schedule_payload, schedule_error = self.schedule_editor.collect_schedule_state()
+            schedule_payload, schedule_error = (
+                self.schedule_editor.collect_schedule_state()
+            )
             if schedule_error:
                 self._flash_status(self.status_label, schedule_error, "red")
                 return
             active_days = any(
-                bool(entry.get("enabled"))
-                for entry in schedule_payload.values()
+                bool(entry.get("enabled")) for entry in schedule_payload.values()
             )
             if not active_days:
                 self._flash_status(
@@ -2551,11 +2703,16 @@ class ProfilePage(QWidget):
                 )
                 return
             payload["schedule"] = schedule_payload
-        logger.info("Submitting profile update payload=%s", {k: v for k, v in payload.items() if k != "password"})
+        logger.info(
+            "Submitting profile update payload=%s",
+            {k: v for k, v in payload.items() if k != "password"},
+        )
         try:
             updated_user = self.api.update_profile(payload)
         except ServerAPIError as exc:
-            logger.error("Profile update failed for user_id=%s: %s", self.user["user_id"], exc)
+            logger.error(
+                "Profile update failed for user_id=%s: %s", self.user["user_id"], exc
+            )
             self._flash_status(self.status_label, str(exc), "red")
             return
 
@@ -2573,6 +2730,7 @@ class ProfilePage(QWidget):
 
 
 # Main window ------------------------------------------------------------------
+
 
 class MainWindow(QMainWindow):
     def __init__(self, api: Optional[ServerAPI] = None, theme: str = "bolt_light"):
@@ -2622,11 +2780,11 @@ class MainWindow(QMainWindow):
 
         self._tabs: List[Tuple[str, QWidget]] = [
             ("Dashboard", self.dashboard_page),
-            ("Request",   self.request_page),
-            ("Drivers",   self.search_page),
-            ("Chats",     self.chats_page),
-            ("Trips",     self.trips_page),
-            ("Profile",   self.profile_page),
+            ("Request", self.request_page),
+            ("Drivers", self.search_page),
+            ("Chats", self.chats_page),
+            ("Trips", self.trips_page),
+            ("Profile", self.profile_page),
         ]
         self._tab_buttons: List[QPushButton] = []
         self._tab_icon_palettes: Dict[str, Dict[str, QIcon]] = {}
@@ -2636,7 +2794,9 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(f"Open {label}")
             btn.clicked.connect(lambda _=False, idx=i: self._switch_tab(idx))
-            btn.toggled.connect(lambda _checked, self=self: self._apply_tab_icon_states())
+            btn.toggled.connect(
+                lambda _checked, self=self: self._apply_tab_icon_states()
+            )
             bn.addWidget(btn, 1)
             self._tab_buttons.append(btn)
         self._refresh_tab_icons()
@@ -2670,7 +2830,9 @@ class MainWindow(QMainWindow):
         if active_primary.lightness() < 150:
             active_primary = QColor("#FFFFFF")
         active_secondary = QColor(active_primary)
-        active_highlight = QColor(colors.get("accent_alt", colors.get("accent", "#34BB78")))
+        active_highlight = QColor(
+            colors.get("accent_alt", colors.get("accent", "#34BB78"))
+        )
 
         self._tab_icon_palettes = {
             "default": self._build_tab_icon_map(
@@ -2692,7 +2854,9 @@ class MainWindow(QMainWindow):
         default_icons = self._tab_icon_palettes.get("default", {})
         active_icons = self._tab_icon_palettes.get("active", {})
         for btn, (label, _) in zip(self._tab_buttons, self._tabs):
-            icon = active_icons.get(label) if btn.isChecked() else default_icons.get(label)
+            icon = (
+                active_icons.get(label) if btn.isChecked() else default_icons.get(label)
+            )
             if icon is None:
                 btn.setIcon(QIcon())
                 continue
@@ -2706,7 +2870,6 @@ class MainWindow(QMainWindow):
         secondary_color: QColor,
         highlight_color: QColor,
     ) -> Dict[str, QIcon]:
-
         def make_icon(draw_fn: Callable[[QPainter], None]) -> QIcon:
             pix = QPixmap(64, 64)
             pix.fill(Qt.GlobalColor.transparent)
@@ -2853,6 +3016,7 @@ class MainWindow(QMainWindow):
         self.request_page.set_user_context(hydrated)
         self.dashboard_page.set_session_token(hydrated.get("session_token"))
         self.chats_page.set_user(hydrated)
+        self.trips_page.set_user_context(hydrated)
         self._register_chat_endpoint(hydrated)
         self._update_logged_in_banner()
         self.apply_theme(user.get("theme", self.theme))
@@ -2927,6 +3091,7 @@ class MainWindow(QMainWindow):
         self.profile_page.load_user({})
         self.request_page.clear_user_context()
         self.chats_page.clear_user()
+        self.trips_page.clear_user_context()
         for button in self._tab_buttons:
             button.setChecked(False)
         self.bottom_nav.setVisible(False)
@@ -2939,7 +3104,9 @@ class MainWindow(QMainWindow):
             return
         self.theme = theme
         app.setStyleSheet(build_stylesheet(theme))
-        self.chats_page.set_palette(THEME_PALETTES.get(theme, THEME_PALETTES["bolt_light"]))
+        self.chats_page.set_palette(
+            THEME_PALETTES.get(theme, THEME_PALETTES["bolt_light"])
+        )
         self._refresh_tab_icons()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
@@ -2950,6 +3117,7 @@ class MainWindow(QMainWindow):
 
 
 # Entrypoint -------------------------------------------------------------------
+
 
 def run(api: Optional[ServerAPI] = None, theme: str = "bolt_light") -> None:
     app = QApplication(sys.argv)

@@ -37,6 +37,7 @@ _ACTION_TO_REQUEST_TYPE = {
     "chat_handshake": 23,
     "complete_ride": 24,
     "rate_driver": 25,
+    "trips": 26,
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
@@ -326,9 +327,13 @@ class ServerAPI:
         return self._send_request("rate_driver", payload)
 
     def fetch_trips(
-        self, *, filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        return self._send_request("trips", {"filters": filters or {}})
+        self, *, session_token: str, filters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        payload = {
+            "session_id": session_token,
+            "filters": filters or {},
+        }
+        return self._send_request("trips", payload)
 
     def register_chat_endpoint(
         self, *, session_token: str, port: int
@@ -871,9 +876,37 @@ class MockServerAPI(ServerAPI):
                 break
         return {"ride_id": ride_id, "driver_rating": rating}
 
-    def _handle_trips(self, _: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _handle_trips(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
-        return self.db.trips
+        user_id = self._user.get("user_id")
+
+        def _make_trip_entry(ride: Dict[str, Any], role: str) -> Dict[str, Any]:
+            partner_id = (
+                ride.get("driver_id") if role == "rider" else ride.get("rider_id")
+            )
+            partner = self._mock_profile(partner_id) if partner_id else {}
+            return {
+                "ride_id": ride.get("id"),
+                "role": role,
+                "partner_id": partner_id,
+                "partner_name": partner.get("name"),
+                "partner_username": partner.get("username"),
+                "pickup_area": ride.get("pickup_area") or ride.get("from"),
+                "destination": ride.get("destination") or ride.get("to"),
+                "requested_time": ride.get("requested_time") or ride.get("time"),
+                "status": ride.get("status"),
+                "comment": ride.get("comment", ""),
+            }
+
+        as_rider: List[Dict[str, Any]] = []
+        as_driver: List[Dict[str, Any]] = []
+        for ride in self.db.rides:
+            if ride.get("rider_id") == user_id:
+                as_rider.append(_make_trip_entry(ride, "rider"))
+            if ride.get("driver_id") == user_id:
+                as_driver.append(_make_trip_entry(ride, "driver"))
+
+        return {"as_rider": as_rider, "as_driver": as_driver}
 
     def _handle_chats(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         self._require_login()
@@ -1304,6 +1337,16 @@ class AuthBackendServerAPI(MockServerAPI):
         return self._backend.fetch_driver_requests(
             driver_session_id=driver_session_id
         )
+
+    def fetch_trips(
+        self, *, session_token: str, filters: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        try:
+            return self._backend.fetch_trips(
+                session_token=session_token, filters=filters or {}
+            )
+        except ServerAPIError:
+            return super().fetch_trips(session_token=session_token, filters=filters)
 
     def driver_request_decision(
         self,
