@@ -328,6 +328,7 @@ def get_closest_online_drivers(
                         "session_token": driver.get("session_token"),
                         "username": driver.get("username"),
                         "name": driver.get("name"),
+                        "gender": driver.get("gender"),
                         "area": driver.get("area"),
                         "avg_rating_driver": driver.get("avg_rating_driver"),
                         "number_of_rides_driver": driver.get("number_of_rides_driver"),

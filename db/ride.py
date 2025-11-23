@@ -154,8 +154,15 @@ def _row_to_ride(row: sqlite3.Row | Tuple[Any, ...]) -> Dict[str, Any]:
         "requested_time",
         "status",
         "comment",
+        "rider_rating",
+        "driver_rating",
     )
-    return {k: row[idx] for idx, k in enumerate(keys)}
+    entry: Dict[str, Any] = {}
+    for idx, key in enumerate(keys):
+        if idx >= len(row):
+            break
+        entry[key] = row[idx]
+    return entry
 
 
 def _rows_to_payload(
@@ -184,6 +191,8 @@ CREATE TABLE IF NOT EXISTS rides (
     requested_time TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('PENDING','AWAITING_RATING','COMPLETE','CANCELED')),
     comment TEXT NOT NULL DEFAULT '',
+    rider_rating REAL,
+    driver_rating REAL,
     FOREIGN KEY(rider_id) REFERENCES users(id),
     FOREIGN KEY(driver_id) REFERENCES users(id)
 );
@@ -248,11 +257,32 @@ def _migrate_rides_table_for_rating_state() -> None:
             DB_CONNECTION.execute("PRAGMA foreign_keys=ON")
 
 
+def _rides_table_missing_rating_columns() -> Dict[str, bool]:
+    cur = DB_CONNECTION.execute("PRAGMA table_info(rides)")
+    columns = {row[1] for row in cur.fetchall()}
+    return {
+        "rider_rating": "rider_rating" not in columns,
+        "driver_rating": "driver_rating" not in columns,
+    }
+
+
+def _add_missing_rating_columns() -> None:
+    missing = _rides_table_missing_rating_columns()
+    if not any(missing.values()):
+        return
+    with DB_CONNECTION:
+        if missing["rider_rating"]:
+            DB_CONNECTION.execute("ALTER TABLE rides ADD COLUMN rider_rating REAL")
+        if missing["driver_rating"]:
+            DB_CONNECTION.execute("ALTER TABLE rides ADD COLUMN driver_rating REAL")
+
+
 def init_ride_schema() -> None:
     """Create the rides table with the expected columns and indexes."""
     DB_CONNECTION.execute(_RIDES_TABLE_SQL)
     if _rides_table_missing_rating_state():
         _migrate_rides_table_for_rating_state()
+    _add_missing_rating_columns()
     DB_CONNECTION.execute(
         "CREATE INDEX IF NOT EXISTS idx_rides_rider_id ON rides(rider_id)"
     )
@@ -380,7 +410,9 @@ def get_ride(ride_id: int) -> DBResponse:
                 destination,
                 requested_time,
                 status,
-                comment
+                comment,
+                rider_rating,
+                driver_rating
             FROM rides
             WHERE id = ?
             """,
@@ -451,7 +483,9 @@ def list_rides(
             destination,
             requested_time,
             status,
-            comment
+            comment,
+            rider_rating,
+            driver_rating
         FROM rides
     """
     if filters:
@@ -570,13 +604,23 @@ def update_ride(
     clean_comment = (comment or "").strip()
 
     try:
+        assignments = ["status = ?", "comment = ?"]
+        params: List[Any] = [status_value.value, clean_comment]
+        if rider_rating_value is not None:
+            assignments.append("rider_rating = ?")
+            params.append(rider_rating_value)
+        if driver_rating_value is not None:
+            assignments.append("driver_rating = ?")
+            params.append(driver_rating_value)
+        assignments_sql = ", ".join(assignments)
+        params.append(ride_id_value)
         DB_CONNECTION.execute(
-            """
+            f"""
             UPDATE rides
-            SET status = ?, comment = ?
+            SET {assignments_sql}
             WHERE id = ?
             """,
-            (status_value.value, clean_comment, ride_id_value),
+            params,
         )
         DB_CONNECTION.commit()
 

@@ -1252,6 +1252,11 @@ class RequestRidePage(QWidget):
 
         auto_form.addRow("Where are you now?", self.location_combo)
         auto_form.addRow("Min rating", self.auto_min_rating)
+        self.gender_combo = QComboBox()
+        self.gender_combo.addItem("Any gender", None)
+        for gender_value, gender_label in GENDER_CHOICES:
+            self.gender_combo.addItem(f"{gender_label} drivers", gender_value)
+        auto_form.addRow("Preferred driver gender", self.gender_combo)
         auto_form.addRow("Pickup time", self.auto_time_input)
         auto_form.addRow(self.auto_btn)
         auto_form.addRow(status_widget)
@@ -1338,6 +1343,7 @@ class RequestRidePage(QWidget):
         self._driver_poll_timer.setInterval(5000)
         self._driver_poll_timer.setSingleShot(False)
         self._driver_poll_timer.timeout.connect(self._poll_driver_requests)
+        self._update_target_driver_ui()
 
     def set_user_context(self, user: Dict[str, Any]) -> None:
         self.session_token = user.get("session_token")
@@ -1389,6 +1395,9 @@ class RequestRidePage(QWidget):
         self.rate_driver_btn.setVisible(False)
         self._driver_rating_submitted = False
         self.auto_results.clear()
+        if self.gender_combo.count():
+            self.gender_combo.setCurrentIndex(0)
+        self._set_target_driver(None)
         self._update_auto_status(
             "Signed out", "Log in to use automated requests.", error=False
         )
@@ -1410,6 +1419,8 @@ class RequestRidePage(QWidget):
             return
         rider_location = self.location_combo.currentData()
         min_rating = self.auto_min_rating.value()
+        target_driver_id = self._selected_driver_id()
+        preferred_gender = self._preferred_driver_gender()
         payload: Dict[str, Any] = {
             "rider_session_id": self.session_token,
             "rider_location": bool(rider_location),
@@ -1417,11 +1428,19 @@ class RequestRidePage(QWidget):
         payload["pickup_time"] = self.auto_time_input.dateTime().toString(
             Qt.DateFormat.ISODate
         )
-        if min_rating > 0:
+        if target_driver_id is not None:
+            payload["target_driver_id"] = target_driver_id
+        elif min_rating > 0:
             payload["min_avg_rating"] = float(min_rating)
+        if preferred_gender:
+            payload["preferred_gender"] = preferred_gender
         self.auto_btn.setEnabled(False)
         self._update_auto_status(
-            "Matching", "Contacting nearby drivers...", error=False
+            "Matching",
+            "Contacting your selected driver..."
+            if target_driver_id is not None
+            else "Contacting nearby drivers...",
+            error=False,
         )
         try:
             response = self.api.automated_request(**payload)
@@ -1436,7 +1455,9 @@ class RequestRidePage(QWidget):
             self._rider_poll_timer.start()
         message = response.get("message") or ""
         raw_drivers = response.get("drivers") or []
-        drivers = list(raw_drivers)[:3]
+        drivers = list(raw_drivers)
+        if target_driver_id is None:
+            drivers = drivers[:3]
         self.auto_results.clear()
         if not drivers:
             self.auto_results.addItem(message or "No drivers available.")
@@ -1455,12 +1476,17 @@ class RequestRidePage(QWidget):
                 distance = driver.get("distance_km")
                 summary = f"{username} | {duration or '?'} min | {distance or '?'} km"
                 self.auto_results.addItem(summary)
-            self._update_auto_status(
-                "Notified",
-                message
-                or f"Alerted top {len(drivers)} drivers. Awaiting confirmations.",
-                error=False,
-            )
+            if target_driver_id is not None:
+                target_label = self._selected_driver_name() or "the selected driver"
+                status_message = (
+                    message or f"Alerted {target_label}. Waiting for their response."
+                )
+            else:
+                status_message = (
+                    message
+                    or f"Alerted top {len(drivers)} drivers. Awaiting confirmations."
+                )
+            self._update_auto_status("Notified", status_message, error=False)
             self._render_request_status(response)
         self.auto_btn.setEnabled(True)
 
@@ -1470,6 +1496,66 @@ class RequestRidePage(QWidget):
         self.auto_status_heading.setStyleSheet(f"font-weight: 600; color: {color};")
         self.auto_status_message.setText(message)
         self.auto_status_message.setStyleSheet(f"color: {color};")
+
+    def _set_target_driver(self, driver: Optional[Dict[str, Any]]) -> None:
+        self._last_selected_driver = driver
+        target_id = self._selected_driver_id()
+        is_targeted = driver is not None and target_id is not None
+        self.auto_min_rating.setEnabled(not is_targeted)
+        if is_targeted:
+            self.auto_min_rating.setValue(0.0)
+        self._update_target_driver_ui()
+
+    def _update_target_driver_ui(self) -> None:
+        if not hasattr(self, "auto_btn"):
+            return
+        driver = self._last_selected_driver or {}
+        target_id = self._selected_driver_id()
+        if driver and target_id is not None:
+            label = self._selected_driver_name() or "driver"
+            self.auto_btn.setText(f"Request {label}")
+            self.auto_btn.setToolTip("Send a ride request to this driver only.")
+        else:
+            self.auto_btn.setText("Send automated request")
+            self.auto_btn.setToolTip("")
+
+    def _selected_driver_id(self) -> Optional[int]:
+        driver = self._last_selected_driver
+        if not driver:
+            return None
+        for key in ("user_id", "driver_id", "id"):
+            candidate = driver.get(key)
+            if candidate is None:
+                continue
+            try:
+                return int(candidate)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _selected_driver_name(self) -> Optional[str]:
+        driver = self._last_selected_driver
+        if not driver:
+            return None
+        for key in ("name", "username"):
+            label = driver.get(key)
+            if label:
+                return str(label)
+        identifier = driver.get("id")
+        if identifier is not None:
+            return str(identifier)
+        return None
+
+    def _preferred_driver_gender(self) -> Optional[str]:
+        if not hasattr(self, "gender_combo"):
+            return None
+        value = self.gender_combo.currentData()
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if normalized in {"female", "male"}:
+            return normalized
+        return None
 
     def _render_request_status(
         self, request: Optional[Dict[str, Any]], message: Optional[str] = None
@@ -1508,15 +1594,20 @@ class RequestRidePage(QWidget):
             details.append(message)
         elif request.get("message"):
             details.append(str(request.get("message")))
-        if ride_status == "AWAITING_RATING":
+        awaiting_rating = ride_status == "AWAITING_RATING"
+        if awaiting_rating:
             details.append("Please rate your driver to finish the ride.")
         self.status_heading.setText(f"Status: {status_text}")
         self.status_details.setText("\n".join(details) if details else "In progress.")
-        self.cancel_btn.setVisible(True)
-        self.confirm_btn.setVisible(status_text.upper() == "AWAITING RIDER")
+        if awaiting_rating:
+            self.cancel_btn.setVisible(False)
+            self.confirm_btn.setVisible(False)
+        else:
+            self.cancel_btn.setVisible(True)
+            self.confirm_btn.setVisible(status_text.upper() == "AWAITING RIDER")
         can_rate = bool(
             self.active_ride_id
-            and ride_status == "AWAITING_RATING"
+            and awaiting_rating
             and not self._driver_rating_submitted
         )
         self.rate_driver_btn.setVisible(can_rate)
@@ -1679,10 +1770,19 @@ class RequestRidePage(QWidget):
             self.complete_ride_btn.setProperty("ride_id", None)
             return
         rider_name = data.get("rider_name") or data.get("rider_username") or "Rider"
+        rider_gender_value = data.get("rider_gender")
+        rider_gender = (
+            gender_display_label(rider_gender_value)
+            if rider_gender_value
+            else None
+        )
         pickup_area = data.get("pickup_area") or "Unknown pickup"
         eta = data.get("duration_min")
         distance = data.get("distance_km")
-        parts = [f"{rider_name} waiting near {pickup_area}."]
+        if rider_gender and rider_gender_value:
+            parts = [f"{rider_name} ({rider_gender}) near {pickup_area}."]
+        else:
+            parts = [f"{rider_name} waiting near {pickup_area}."]
         if eta is not None and distance is not None:
             parts.append(f"Approx. {eta} min away ({distance} km).")
         elif eta is not None:
@@ -1795,7 +1895,7 @@ class RequestRidePage(QWidget):
         self._poll_driver_requests()
 
     def prefill_for_driver(self, driver: Dict[str, Any]) -> None:
-        self._last_selected_driver = driver
+        self._set_target_driver(driver)
         driver_name = driver.get("name") or driver.get("username") or "driver"
         driver_area = driver.get("area") or driver.get("zone")
         if driver_area:
@@ -1808,7 +1908,7 @@ class RequestRidePage(QWidget):
         self.auto_time_input.setDateTime(QDateTime.currentDateTime())
         self._update_auto_status(
             "Driver selected",
-            f"Prepared automated request context for {driver_name}. Adjust options then click 'Send automated request'.",
+            f"Prepared direct request for {driver_name}. Adjust options then click the request button.",
             error=False,
         )
 
@@ -1821,6 +1921,8 @@ class SearchDriverPage(QWidget):
         super().__init__()
         self.api = api
         self.request_driver_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.user_role: str = "passenger"
+        self._allow_requests: bool = False
 
         layout = QVBoxLayout(self)
         filter_box = QGroupBox("Filters")
@@ -1884,13 +1986,14 @@ class SearchDriverPage(QWidget):
             return it
 
         items = response.get("items") or response.get("drivers") or []
-        if not items:
-            self._show_placeholder("No drivers matched your filters.")
+        online_items = [driver for driver in items if self._driver_is_online(driver)]
+        if not online_items:
+            self._show_placeholder("No online drivers matched your filters.")
             return
-        self.table.setRowCount(len(items))
+        self.table.setRowCount(len(online_items))
         self.table.setColumnCount(5)
         self._set_table_headers()
-        for row, driver in enumerate(items):
+        for row, driver in enumerate(online_items):
             rating_value = driver.get("rating")
             if rating_value is None:
                 rating_value = driver.get("avg_rating_driver", 0)
@@ -1913,21 +2016,28 @@ class SearchDriverPage(QWidget):
             rating_item = ro(rating_display)
             rating_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 3, rating_item)
-            btn = QPushButton("Request ride")
-            btn.setObjectName("driverRequestBtn")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(DRIVER_ROW_BUTTON_STYLE)
-            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            btn.setFixedWidth(130)
-            btn.clicked.connect(
-                lambda _=False, d=driver: self._handle_request_driver(d)
-            )
-            button_container = QWidget()
-            btn_layout = QHBoxLayout(button_container)
-            btn_layout.setContentsMargins(0, 0, 0, 0)
-            btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            btn_layout.addWidget(btn)
-            self.table.setCellWidget(row, 4, button_container)
+            if self._can_request_rides():
+                btn = QPushButton("Request ride")
+                btn.setObjectName("driverRequestBtn")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setStyleSheet(DRIVER_ROW_BUTTON_STYLE)
+                btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                btn.setFixedWidth(130)
+                btn.clicked.connect(
+                    lambda _=False, d=driver: self._handle_request_driver(d)
+                )
+                button_container = QWidget()
+                btn_layout = QHBoxLayout(button_container)
+                btn_layout.setContentsMargins(0, 0, 0, 0)
+                btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                btn_layout.addWidget(btn)
+                self.table.setCellWidget(row, 4, button_container)
+            else:
+                unavailable = ro("Rider only")
+                unavailable.setToolTip(
+                    "Switch to a rider account to send ride requests."
+                )
+                self.table.setItem(row, 4, unavailable)
 
     def reset_results(self) -> None:
         self._show_placeholder("Use the filters above to search for drivers.")
@@ -1941,12 +2051,46 @@ class SearchDriverPage(QWidget):
         msg.setFlags(msg.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.table.setItem(0, 0, msg)
 
+    def set_user_context(self, user: Optional[Dict[str, Any]]) -> None:
+        role_value = (user or {}).get("role")
+        role = str(role_value or "passenger").strip().lower()
+        self.user_role = role or "passenger"
+        self._allow_requests = self.user_role != "driver"
+
+    def clear_user_context(self) -> None:
+        self.user_role = "passenger"
+        self._allow_requests = False
+
     def set_request_handler(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         self.request_driver_callback = callback
 
     def _handle_request_driver(self, driver: Dict[str, Any]) -> None:
         if self.request_driver_callback:
             self.request_driver_callback(driver)
+
+    def _driver_is_online(self, driver: Dict[str, Any]) -> bool:
+        if not isinstance(driver, dict):
+            return False
+        status_text = str(
+            driver.get("status") or driver.get("availability") or ""
+        ).strip().lower()
+        if status_text in {"offline", "away", "unavailable"}:
+            return False
+        if status_text in {"online", "available", "active"}:
+            return True
+        for key in ("session_token", "last_seen"):
+            if driver.get(key):
+                return True
+        online_flag = driver.get("is_online")
+        if online_flag is not None:
+            return bool(online_flag)
+        online_flag = driver.get("online")
+        if online_flag is not None:
+            return bool(online_flag)
+        return True
+
+    def _can_request_rides(self) -> bool:
+        return self._allow_requests and self.request_driver_callback is not None
 
     def _set_table_headers(self) -> None:
         labels = ["Name", "Gender", "Area", "Rating", "Actions"]
@@ -2359,9 +2503,19 @@ class TripsPage(QWidget):
         self.status_label = QLabel("Log in to view your past rides.")
         self.status_label.setStyleSheet("color: #5c636a;")
 
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Role", "Partner", "Pickup", "Destination", "Requested at", "Status", "Notes"]
+            [
+                "Role",
+                "Partner",
+                "Pickup",
+                "Destination",
+                "Requested at",
+                "Status",
+                "Driver rating",
+                "Rider rating",
+                "Notes",
+            ]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -2469,6 +2623,8 @@ class TripsPage(QWidget):
             "Destination",
             "Requested at",
             "Status",
+            "Driver rating",
+            "Rider rating",
             "Notes",
         ]
         self.table.setColumnCount(len(headers))
@@ -2481,6 +2637,8 @@ class TripsPage(QWidget):
                 requested.strftime("%Y-%m-%d %H:%M") if requested else str(trip.get("requested_time") or "")
             )
             partner = trip.get("partner_name") or trip.get("partner_username") or "Unknown"
+            driver_rating = self._format_rating(trip.get("driver_rating"))
+            rider_rating = self._format_rating(trip.get("rider_rating"))
             entries = [
                 trip.get("role", "").title(),
                 partner,
@@ -2488,6 +2646,8 @@ class TripsPage(QWidget):
                 trip.get("destination") or "Unknown",
                 requested_text,
                 str(trip.get("status") or "").replace("_", " ").title(),
+                driver_rating,
+                rider_rating,
                 trip.get("comment") or "",
             ]
             for col, value in enumerate(entries):
@@ -2513,6 +2673,16 @@ class TripsPage(QWidget):
             except ValueError:
                 continue
         return None
+
+    @staticmethod
+    def _format_rating(value: Any) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "-"
+        if number <= 0:
+            return "-"
+        return f"{number:.1f}"
 
 
 # Profile ----------------------------------------------------------------------
@@ -3131,6 +3301,7 @@ class MainWindow(QMainWindow):
         self.user = hydrated
         self.profile_page.load_user(hydrated)
         self.request_page.set_user_context(hydrated)
+        self.search_page.set_user_context(hydrated)
         self.dashboard_page.set_session_token(hydrated.get("session_token"))
         self.dashboard_page.set_user_context(hydrated)
         self.chats_page.set_user(hydrated)
@@ -3168,6 +3339,8 @@ class MainWindow(QMainWindow):
         self.user.update(updated_user)
         self.dashboard_page.set_user_context(self.user)
         self.dashboard_page.refresh()
+        self.request_page.set_user_context(self.user)
+        self.search_page.set_user_context(self.user)
         self._update_logged_in_banner()
 
     def _update_logged_in_banner(self) -> None:
@@ -3211,6 +3384,7 @@ class MainWindow(QMainWindow):
         self.chat_service.clear()
         self.profile_page.load_user({})
         self.request_page.clear_user_context()
+        self.search_page.clear_user_context()
         self.chats_page.clear_user()
         self.trips_page.clear_user_context()
         for button in self._tab_buttons:

@@ -299,6 +299,8 @@ class ServerAPI:
         rider_location: bool | str | int,
         min_avg_rating: Optional[float] = None,
         pickup_time: Optional[str] = None,
+        target_driver_id: Optional[int] = None,
+        preferred_gender: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not rider_session_id:
             raise ServerAPIError("rider_session_id is required for automated requests.")
@@ -310,6 +312,10 @@ class ServerAPI:
             payload["min_avg_rating"] = float(min_avg_rating)
         if pickup_time:
             payload["pickup_time"] = pickup_time
+        if target_driver_id is not None:
+            payload["target_driver_id"] = int(target_driver_id)
+        if preferred_gender:
+            payload["preferred_gender"] = preferred_gender
         return self._send_request("automated_request", payload)
 
     def fetch_driver_requests(self, *, driver_session_id: str) -> Dict[str, Any]:
@@ -863,26 +869,84 @@ class MockServerAPI(ServerAPI):
         request_id = f"auto-{self._request_counter:04d}"
         origin = "AUB Campus" if at_aub else (self._user.get("area") or "Home")
         destination = (self._user.get("area") or "Home") if at_aub else "AUB Campus"
-        top_drivers = self.db.drivers[:3]  # limit to 3 closest drivers
-        drivers = []
-        for idx, driver in enumerate(top_drivers, start=1):
-            drivers.append(
-                {
-                    "driver_id": driver.get("user_id") or driver.get("id"),
-                    "username": driver.get("name") or driver.get("id"),
-                    "name": driver.get("name"),
-                    "gender": driver.get("gender", _DEFAULT_GENDER),
-                    "session_token": f"mock-driver-{driver.get('id')}",
-                    "distance_km": round(0.8 * idx, 2),
-                    "duration_min": 5 * idx,
-                    "area": driver.get("area"),
-                    "avg_rating_driver": driver.get("rating", 4.5),
-                }
-            )
-        status = "DRIVER_PENDING" if drivers else "EXHAUSTED"
-        message = (
-            "Mock drivers loaded." if drivers else "No drivers available right now."
+        target_driver_raw = payload.get("target_driver_id")
+        preferred_gender_raw = payload.get("preferred_gender")
+        preferred_gender = (
+            str(preferred_gender_raw).strip().lower()
+            if preferred_gender_raw is not None
+            else None
         )
+        if preferred_gender not in {"female", "male"}:
+            preferred_gender = None
+        target_driver: Optional[Dict[str, Any]] = None
+        if target_driver_raw is not None:
+            target_driver = next(
+                (
+                    d
+                    for d in self.db.drivers
+                    if str(d.get("user_id") or d.get("id")) == str(target_driver_raw)
+                ),
+                None,
+            )
+            if not target_driver:
+                raise ServerAPIError("Selected driver is not available right now.")
+            top_drivers = [target_driver]
+        else:
+            top_drivers = self.db.drivers[:3]
+
+        def _build_driver_payload(source: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            entries: List[Dict[str, Any]] = []
+            for idx, driver in enumerate(source, start=1):
+                entries.append(
+                    {
+                        "driver_id": driver.get("user_id") or driver.get("id"),
+                        "username": driver.get("name") or driver.get("id"),
+                        "name": driver.get("name"),
+                        "gender": driver.get("gender", _DEFAULT_GENDER),
+                        "session_token": f"mock-driver-{driver.get('id')}",
+                        "distance_km": round(0.8 * idx, 2),
+                        "duration_min": 5 * idx,
+                        "area": driver.get("area"),
+                        "avg_rating_driver": driver.get("rating", 4.5),
+                    }
+                )
+            return entries
+
+        primary_list = top_drivers
+        if preferred_gender:
+            filtered = [
+                d
+                for d in top_drivers
+                if str(d.get("gender") or "").strip().lower() == preferred_gender
+            ]
+            if filtered:
+                primary_list = filtered
+
+        drivers = _build_driver_payload(primary_list[:3])
+        gender_notice: Optional[str] = None
+        if not drivers and top_drivers:
+            gender_notice = (
+                "No drivers matching your preferred gender were available. Showing all drivers instead."
+                if preferred_gender
+                else None
+            )
+            drivers = _build_driver_payload(top_drivers[:3])
+
+        status = "DRIVER_PENDING" if drivers else "EXHAUSTED"
+        if target_driver:
+            driver_label = target_driver.get("name") or target_driver.get("id") or "Driver"
+            message = f"Sent request to {driver_label}."
+        else:
+            base_message = (
+                "Mock drivers loaded."
+                if drivers
+                else "No drivers available right now."
+            )
+            if gender_notice:
+                message = gender_notice
+            else:
+                message = base_message
+        rider_gender = self._user.get("gender", _DEFAULT_GENDER)
         request_entry = {
             "request_id": request_id,
             "status": status,
@@ -896,9 +960,11 @@ class MockServerAPI(ServerAPI):
                 "user_id": self._user.get("user_id"),
                 "name": self._user.get("name") or self._user.get("username"),
                 "username": self._user.get("username"),
+                "gender": rider_gender,
             },
             "origin": origin,
             "destination": destination,
+            "rider_gender": rider_gender,
         }
         self.db.ride_requests.insert(0, request_entry)
         return {
@@ -1021,6 +1087,8 @@ class MockServerAPI(ServerAPI):
                 "requested_time": ride.get("requested_time") or ride.get("time"),
                 "status": ride.get("status"),
                 "comment": ride.get("comment", ""),
+                "driver_rating": ride.get("driver_rating"),
+                "rider_rating": ride.get("rider_rating"),
             }
 
         as_rider: List[Dict[str, Any]] = []
@@ -1131,6 +1199,8 @@ class MockServerAPI(ServerAPI):
                 "request_id": request["request_id"],
                 "rider_name": request["rider"]["name"],
                 "rider_username": request["rider"]["username"],
+                "rider_gender": request.get("rider_gender")
+                or request["rider"].get("gender"),
                 "pickup_area": request.get("origin"),
                 "destination": request.get("destination"),
                 "requested_time": request.get("pickup_time"),
@@ -1474,12 +1544,16 @@ class AuthBackendServerAPI(MockServerAPI):
         rider_location: bool | str | int,
         min_avg_rating: Optional[float] = None,
         pickup_time: Optional[str] = None,
+        target_driver_id: Optional[int] = None,
+        preferred_gender: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._backend.automated_request(
             rider_session_id=rider_session_id,
             rider_location=rider_location,
             min_avg_rating=min_avg_rating,
             pickup_time=pickup_time,
+            target_driver_id=target_driver_id,
+            preferred_gender=preferred_gender,
         )
 
     def fetch_driver_requests(self, *, driver_session_id: str) -> Dict[str, Any]:

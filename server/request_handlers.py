@@ -8,7 +8,7 @@ from server.server_client_protocol import (
     server_response_type,
     msg_status,
 )
-from db.user_sessions import get_active_session, touch_session
+from db.user_sessions import get_active_session, touch_session, get_session_by_user
 from db.user_db import (
     get_user_profile,
     get_rides_driver,
@@ -549,6 +549,74 @@ def _coerce_min_avg_rating(value: Any) -> Tuple[Optional[float], Optional[str]]:
         return None, "min_avg_rating must be >= 0."
     return rating, None
 
+
+def _normalize_gender_filter(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"female", "male"}:
+        return normalized
+    return None
+
+
+def _build_targeted_driver_entry(
+    *,
+    driver_id: int,
+    rider_id: int,
+    passenger_area: Optional[str],
+    passenger_lat: float,
+    passenger_long: float,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    profile_response = get_user_profile(driver_id)
+    if profile_response.status != db_msg_status.OK:
+        err = (
+            profile_response.payload.get("error")
+            if profile_response.payload
+            else "Unable to fetch driver profile."
+        )
+        return None, err
+    profile = profile_response.payload["output"]
+    if not profile.get("is_driver"):
+        return None, "Selected user is not registered as a driver."
+
+    session_lookup = get_session_by_user(driver_id)
+    if session_lookup.status != db_msg_status.OK:
+        return None, "Selected driver is currently offline."
+    session_token = session_lookup.payload["output"]["session_token"]
+    session_response = get_active_session(session_id=session_token)
+    if session_response.status != db_msg_status.OK:
+        return None, "Selected driver is currently offline."
+
+    try:
+        trip_info = compute_driver_to_rider_info(
+            driver_id,
+            rider_id,
+            pickup_lat=passenger_lat,
+            pickup_lng=passenger_long,
+            pickup_area=passenger_area,
+        )
+    except RuntimeError as exc:
+        return None, f"Unable to compute trip details: {exc}"
+
+    entry = {
+        "driver_id": driver_id,
+        "session_token": session_token,
+        "username": profile.get("username"),
+        "name": profile.get("name") or profile.get("username") or f"Driver {driver_id}",
+        "gender": profile.get("gender"),
+        "area": profile.get("area"),
+        "avg_rating_driver": profile.get("avg_rating_driver"),
+        "number_of_rides_driver": profile.get("number_of_rides_driver"),
+        "distance_km": trip_info.get("distance_km"),
+        "distance_text": trip_info.get("distance_text"),
+        "duration_min": trip_info.get("duration_min"),
+        "duration_text": trip_info.get("duration_text"),
+        "maps_url": trip_info.get("maps_url"),
+        "latitude": profile.get("latitude"),
+        "longitude": profile.get("longitude"),
+    }
+    return entry, None
+
 def automated_request(payload: Dict[str, Any]) -> ServerResponse:
     """
     Automatically obtain the closest eligible drivers for a rider session.
@@ -614,6 +682,8 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
     if error:
         return _error_server(error)
     min_avg_rating = min_avg_rating or 0.0
+    preferred_gender = _normalize_gender_filter(payload.get("preferred_gender"))
+    gender_notice: Optional[str] = None
 
     pickup_time_raw = payload.get("pickup_time")
     pickup_time_iso: Optional[str] = None
@@ -629,59 +699,120 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
                 )
             pickup_time_iso = pickup_dt.isoformat()
 
-    drivers_response = get_closest_online_drivers(
-        passenger_lat=passenger_lat,
-        passenger_long=passenger_long,
-        passenger_zone=passenger_zone,
-        min_avg=min_avg_rating,
-        requested_at=pickup_dt,
-    )
-    if drivers_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
-        err = (
-            drivers_response.payload.get("error")
-            if drivers_response.payload
-            else "Unable to contact maps service."
-        )
-        return _error_server(f"Automatic ride request failed: {err}")
+    target_driver_raw = payload.get("target_driver_id")
+    target_driver_id: Optional[int] = None
+    if target_driver_raw is not None:
+        try:
+            target_driver_id = int(target_driver_raw)
+        except (TypeError, ValueError):
+            return _error_server("target_driver_id must be numeric.")
+        if target_driver_id == rider_id:
+            return _error_server("You cannot request yourself as a driver.")
 
-    drivers_payload = drivers_response.payload or {}
-    drivers_raw = drivers_payload.get("drivers") or drivers_payload.get(
-        "output", {}
-    ).get("drivers", [])
-    drivers: List[Dict[str, Any]] = list(drivers_raw or [])
-
+    drivers: List[Dict[str, Any]] = []
     schedule_notice: Optional[str] = None
-    if pickup_dt and not drivers:
-        fallback_response = get_closest_online_drivers(
+
+    if target_driver_id is not None:
+        driver_entry, error = _build_targeted_driver_entry(
+            driver_id=target_driver_id,
+            rider_id=rider_id,
+            passenger_area=passenger_area,
+            passenger_lat=passenger_lat,
+            passenger_long=passenger_long,
+        )
+        if error:
+            return _error_server(error)
+        drivers = [driver_entry]
+        schedule_notice = (
+            f"Request sent to {driver_entry.get('name') or 'selected driver'}."
+        )
+    else:
+        def apply_gender_filter(
+            candidates: List[Dict[str, Any]]
+        ) -> Tuple[List[Dict[str, Any]], bool]:
+            if not preferred_gender:
+                return candidates, True
+            filtered = [
+                entry
+                for entry in candidates
+                if str(entry.get("gender") or "").strip().lower() == preferred_gender
+            ]
+            if filtered:
+                return filtered, True
+            return candidates, False
+
+        drivers_response = get_closest_online_drivers(
             passenger_lat=passenger_lat,
             passenger_long=passenger_long,
             passenger_zone=passenger_zone,
             min_avg=min_avg_rating,
-            requested_at=None,
+            requested_at=pickup_dt,
         )
-        if fallback_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
+        if drivers_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
             err = (
-                fallback_response.payload.get("error")
-                if fallback_response.payload
+                drivers_response.payload.get("error")
+                if drivers_response.payload
                 else "Unable to contact maps service."
             )
             return _error_server(f"Automatic ride request failed: {err}")
-        fallback_payload = fallback_response.payload or {}
-        fallback_drivers = fallback_payload.get("drivers") or fallback_payload.get(
+        drivers_payload = drivers_response.payload or {}
+        drivers_raw = drivers_payload.get("drivers") or drivers_payload.get(
             "output", {}
         ).get("drivers", [])
-        if fallback_drivers:
-            drivers = list(fallback_drivers)
-            schedule_notice = (
-                "No drivers matched the requested time. Showing nearby drivers instead."
+        drivers = list(drivers_raw or [])
+        gender_applied = True
+        if drivers:
+            drivers, gender_applied = apply_gender_filter(drivers)
+        if not gender_applied and preferred_gender:
+            gender_notice = (
+                f"No drivers matching your preferred gender were available. Showing all drivers instead."
             )
 
-    if isinstance(_AUTOMATED_DRIVER_LIMIT, int) and _AUTOMATED_DRIVER_LIMIT > 0:
-        drivers = drivers[:_AUTOMATED_DRIVER_LIMIT]
+        if pickup_dt and not drivers:
+            fallback_response = get_closest_online_drivers(
+                passenger_lat=passenger_lat,
+                passenger_long=passenger_long,
+                passenger_zone=passenger_zone,
+                min_avg=min_avg_rating,
+                requested_at=None,
+            )
+            if fallback_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
+                err = (
+                    fallback_response.payload.get("error")
+                    if fallback_response.payload
+                    else "Unable to contact maps service."
+                )
+                return _error_server(f"Automatic ride request failed: {err}")
+            fallback_payload = fallback_response.payload or {}
+            fallback_drivers = fallback_payload.get("drivers") or fallback_payload.get(
+                "output", {}
+            ).get("drivers", [])
+            if fallback_drivers:
+                drivers = list(fallback_drivers)
+                schedule_notice = (
+                    "No drivers matched the requested time. Showing nearby drivers instead."
+                )
+                gender_applied = True
+                if drivers:
+                    drivers, gender_applied = apply_gender_filter(drivers)
+                if not gender_applied and preferred_gender:
+                    gender_notice = (
+                        "No drivers matched the preferred gender after relaxing time filters. Showing all drivers instead."
+                    )
+
+        if isinstance(_AUTOMATED_DRIVER_LIMIT, int) and _AUTOMATED_DRIVER_LIMIT > 0:
+            drivers = drivers[:_AUTOMATED_DRIVER_LIMIT]
+
+
+    combined_notice = " ".join(
+        notice for notice in (schedule_notice, gender_notice) if notice
+    ).strip()
+    if not combined_notice:
+        combined_notice = None
 
     if not drivers:
         message = (
-            schedule_notice
+            combined_notice
             or "No online drivers matched the current filters."
         )
         response_payload = {
@@ -751,7 +882,7 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
         min_rating=min_avg_rating,
         rider_profile=rider_profile,
         drivers=drivers,
-        schedule_notice=schedule_notice,
+        schedule_notice=combined_notice,
     )
     if creation_response.status != db_msg_status.OK:
         err = (
@@ -762,7 +893,7 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
         return _error_server(f"Automatic ride request failed: {err}")
 
     request_output = creation_response.payload["output"]
-    message = request_output.get("message") or schedule_notice
+    message = request_output.get("message") or combined_notice
     response_payload = {
         "request_id": request_output["request_id"],
         "status": request_output["status"],
@@ -1295,6 +1426,8 @@ def handle_list_user_trips(payload: Dict[str, Any]) -> ServerResponse:
                     "requested_time": trip.get("requested_time"),
                     "status": trip.get("status"),
                     "comment": trip.get("comment"),
+                    "driver_rating": trip.get("driver_rating"),
+                    "rider_rating": trip.get("rider_rating"),
                 }
             )
         return decorated

@@ -38,6 +38,24 @@ MAX_ACTIVE_PENDING = 3  # keep at most this many drivers simultaneously notified
 _FINAL_STATUSES: Tuple[str, ...] = tuple(
     status.value for status in (RideRequestStatus.COMPLETED, RideRequestStatus.EXHAUSTED, RideRequestStatus.CANCELED)
 )
+_RIDER_GENDER_COLUMN_READY = False
+
+
+def _ensure_rider_gender_column() -> None:
+    global _RIDER_GENDER_COLUMN_READY
+    if _RIDER_GENDER_COLUMN_READY:
+        return
+    try:
+        cur = DB_CONNECTION.execute("PRAGMA table_info(ride_requests)")
+        columns = {row[1] for row in cur.fetchall()}
+        if "rider_gender" not in columns:
+            DB_CONNECTION.execute("ALTER TABLE ride_requests ADD COLUMN rider_gender TEXT")
+            DB_CONNECTION.commit()
+    except sqlite3.OperationalError:
+        # Ignore if the column already exists in a race or DB is read-only.
+        DB_CONNECTION.rollback()
+    finally:
+        _RIDER_GENDER_COLUMN_READY = True
 
 
 def init_ride_request_schema() -> None:
@@ -60,6 +78,7 @@ def init_ride_request_schema() -> None:
             current_driver_session_id TEXT,
             rider_name TEXT,
             rider_username TEXT,
+            rider_gender TEXT,
             rider_rating REAL,
             rider_total_rides INTEGER,
             min_rating REAL,
@@ -100,6 +119,7 @@ def init_ride_request_schema() -> None:
         """
     )
     DB_CONNECTION.commit()
+_ensure_rider_gender_column()
 
 
 def _ensure_float(value: Any) -> Optional[float]:
@@ -159,6 +179,7 @@ def _row_to_request(row: Sequence[Any]) -> Dict[str, Any]:
         current_driver_session_id,
         rider_name,
         rider_username,
+        rider_gender,
         rider_rating,
         rider_total_rides,
         min_rating,
@@ -184,6 +205,7 @@ def _row_to_request(row: Sequence[Any]) -> Dict[str, Any]:
         "current_driver_session_id": current_driver_session_id,
         "rider_name": rider_name,
         "rider_username": rider_username,
+        "rider_gender": rider_gender,
         "rider_rating": rider_rating,
         "rider_total_rides": rider_total_rides,
         "min_rating": min_rating,
@@ -315,11 +337,12 @@ def create_ride_request(
                     current_driver_session_id,
                     rider_name,
                     rider_username,
+                    rider_gender,
                     rider_rating,
                     rider_total_rides,
                     min_rating,
                     message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rider_id,
@@ -336,6 +359,7 @@ def create_ride_request(
                     None,
                     rider_profile.get("name"),
                     rider_profile.get("username"),
+                    rider_profile.get("gender"),
                     _ensure_float(rider_profile.get("avg_rating_rider")),
                     rider_profile.get("number_of_rides_rider"),
                     float(min_rating or 0.0),
@@ -448,6 +472,7 @@ def get_active_request_for_rider(rider_id: int) -> DBResponse:
             current_driver_session_id,
             rider_name,
             rider_username,
+            rider_gender,
             rider_rating,
             rider_total_rides,
             min_rating,
@@ -502,6 +527,7 @@ def get_latest_request_for_rider(rider_id: int) -> DBResponse:
             current_driver_session_id,
             rider_name,
             rider_username,
+            rider_gender,
             rider_rating,
             rider_total_rides,
             min_rating,
@@ -550,6 +576,7 @@ def _fetch_driver_requests(
             r.requested_time,
             r.rider_name,
             r.rider_username,
+            r.rider_gender,
             r.rider_rating,
             r.rider_total_rides,
             r.message,
@@ -586,6 +613,7 @@ def _fetch_driver_requests(
             requested_time,
             rider_name,
             rider_username,
+            rider_gender,
             rider_rating,
             rider_total_rides,
             message,
@@ -614,6 +642,7 @@ def _fetch_driver_requests(
                 "requested_time": requested_time,
                 "rider_name": rider_name,
                 "rider_username": rider_username,
+                "rider_gender": rider_gender,
                 "rider_rating": rider_rating,
                 "rider_total_rides": rider_total_rides,
                 "message": message,

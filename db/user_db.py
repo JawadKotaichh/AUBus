@@ -1096,7 +1096,9 @@ def get_rides_driver(user_id: int) -> DBResponse:
                 destination,
                 requested_time,
                 status,
-                comment
+                comment,
+                rider_rating,
+                driver_rating
             FROM rides
             WHERE driver_id=?
             ORDER BY requested_time DESC, id DESC
@@ -1135,7 +1137,9 @@ def get_rides_rider(user_id: int) -> DBResponse:
                 destination,
                 requested_time,
                 status,
-                comment
+                comment,
+                rider_rating,
+                driver_rating
             FROM rides
             WHERE rider_id=?
             ORDER BY requested_time DESC, id DESC
