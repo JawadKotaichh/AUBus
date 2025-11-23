@@ -31,12 +31,13 @@ import time
 _TEST_DB_PATH = Path(tempfile.gettempdir()) / f"aubus_integration_{uuid4().hex}.db"
 os.environ["DB_URL"] = f"sqlite:///{_TEST_DB_PATH}"
 
-# Ensure repository root is on the import path so `DB.*` works when running the test
+# Ensure repository root is on the import path so `db.*` works when running the test
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-DB_PACKAGE_PATH = os.path.join(PROJECT_ROOT, "DB")
+# Point directly at the lowercase database package folder.
+DB_PACKAGE_PATH = os.path.join(PROJECT_ROOT, "db")
 if DB_PACKAGE_PATH not in sys.path:
     sys.path.insert(0, DB_PACKAGE_PATH)
 
@@ -44,14 +45,14 @@ if DB_PACKAGE_PATH not in sys.path:
 def _reload_modules() -> Dict[str, object]:
     """Reload DB modules so they pick up the temporary DB connection."""
     module_names = [
-        "DB.db_connection",
-        "DB.schedules",
-        "DB.ride",
-        "DB.user_sessions",
-        "DB.maps_service",
-        "DB.zones",
-        "DB.user_db",
-        "DB.matching",
+        "db.db_connection",
+        "db.schedules",
+        "db.ride",
+        "db.user_sessions",
+        "db.maps_service",
+        "db.zones",
+        "db.user_db",
+        "db.matching",
     ]
     modules: Dict[str, object] = {}
     for name in module_names:
@@ -62,11 +63,11 @@ def _reload_modules() -> Dict[str, object]:
 
 MODULES = _reload_modules()
 
-user_db = cast(Any, MODULES["DB.user_db"])
-matching = cast(Any, MODULES["DB.matching"])
-schedules = cast(Any, MODULES["DB.schedules"])
-sessions = cast(Any, MODULES["DB.user_sessions"])
-db_connection_module = cast(Any, MODULES["DB.db_connection"])
+user_db = cast(Any, MODULES["db.user_db"])
+matching = cast(Any, MODULES["db.matching"])
+schedules = cast(Any, MODULES["db.schedules"])
+sessions = cast(Any, MODULES["db.user_sessions"])
+db_connection_module = cast(Any, MODULES["db.db_connection"])
 
 
 def _debug(message: str) -> None:
@@ -164,6 +165,7 @@ class MatchingIntegrationTest(unittest.TestCase):
             username=username,
             password="secret123",
             email=f"{username}@mail.aub.edu",
+            gender="female" if "baabda" in username else "male",
             area=area,
             is_driver=1,
             schedule=schedule_id,
@@ -192,6 +194,7 @@ class MatchingIntegrationTest(unittest.TestCase):
             username=username,
             password="secret123",
             email=f"{username}@mail.aub.edu",
+            gender="female" if is_driver == 0 else "male",
             area=area,
             is_driver=is_driver,
             schedule=None,

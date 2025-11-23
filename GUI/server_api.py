@@ -17,6 +17,10 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+import os
+
+from weather_service import WeatherService, WeatherServiceError
+
 
 _ACTION_TO_REQUEST_TYPE = {
     "register": 1,  # client_request_type.REGISTER_USER
@@ -41,7 +45,24 @@ _ACTION_TO_REQUEST_TYPE = {
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
+_DEFAULT_GENDER = "female"
 _SENSITIVE_KEYS = {"password", "session_token"}
+_ALLOWED_GENDERS = {"female", "male"}
+_GENDER_ALIASES = {
+    "f": "female",
+    "female": "female",
+    "m": "male",
+    "male": "male",
+    "man": "male",
+    "woman": "female",
+    "non-binary": _DEFAULT_GENDER,
+    "nonbinary": _DEFAULT_GENDER,
+    "nb": _DEFAULT_GENDER,
+    "prefer not to say": _DEFAULT_GENDER,
+    "prefer_not_to_say": _DEFAULT_GENDER,
+    "prefer_not_say": _DEFAULT_GENDER,
+    "": _DEFAULT_GENDER,
+}
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -68,6 +89,18 @@ def _scrub_sensitive(value: Any) -> Any:
     return value
 
 
+def _normalize_client_gender(value: Any) -> str:
+    if value is None:
+        return _DEFAULT_GENDER
+    normalized = str(value).strip().lower()
+    if normalized in _ALLOWED_GENDERS:
+        return normalized
+    alias = _GENDER_ALIASES.get(normalized)
+    if alias:
+        return alias
+    return _DEFAULT_GENDER
+
+
 class ServerAPIError(RuntimeError):
     """Raised when the server reports an error or the request fails."""
 
@@ -82,12 +115,23 @@ class ServerAPI:
     """
 
     def __init__(
-        self, host: str = "127.0.0.1", port: int = 5000, timeout: float = 8.0
+        self,
+        host: str = "127.0.0.1",
+        port: int = 5000,
+        timeout: float = 8.0,
+        weather_service: Optional[WeatherService] = None,
+        *,
+        enable_demo_fallbacks: Optional[bool] = None,
     ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
         self._user_profiles: Dict[str, Dict[str, Any]] = {}
+        self._weather_service = weather_service or WeatherService()
+        if enable_demo_fallbacks is None:
+            allow_flag = (os.getenv("AUBUS_ALLOW_FALLBACKS") or "").strip().lower()
+            enable_demo_fallbacks = allow_flag not in {"0", "false", "no"}
+        self._enable_demo_fallbacks = bool(enable_demo_fallbacks)
 
     # Public API -----------------------------------------------------------------
     def register_user(
@@ -98,6 +142,7 @@ class ServerAPI:
         username: str,
         password: str,
         role: str | bool,
+        gender: Optional[str] = None,
         area: str,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
@@ -105,6 +150,7 @@ class ServerAPI:
     ) -> Dict[str, Any]:
         role_text = role if isinstance(role, str) and role.strip() else "passenger"
         normalized_role = role_text.strip().lower()
+        gender_value = _normalize_client_gender(gender)
         profile = {
             "name": (name or "").strip(),
             "email": (email or "").strip(),
@@ -113,12 +159,14 @@ class ServerAPI:
             "role": "driver" if normalized_role == "driver" else "passenger",
             "theme": _DEFAULT_THEME,
             "notifications": True,
+            "gender": gender_value,
         }
         payload = {
             "name": profile["name"],
             "email": profile["email"],
             "username": profile["username"],
             "password": password,
+            "gender": gender_value,
             "area": profile["area"],
             "is_driver": 1 if profile["role"] == "driver" else 0,
         }
@@ -141,7 +189,10 @@ class ServerAPI:
         cache_key = username.strip().lower()
         self._user_profiles[cache_key] = {
             **self._user_profiles.get(cache_key, {}),
-            **{k: user_payload.get(k) for k in ("username", "email", "area")},
+            **{
+                k: user_payload.get(k)
+                for k in ("username", "email", "area", "gender")
+            },
         }
         return user_payload
 
@@ -165,11 +216,39 @@ class ServerAPI:
             return {"message": output}
         return {}
 
-    def fetch_weather(self) -> Dict[str, Any]:
-        return self._send_request("weather", None)
+    def fetch_weather(
+        self,
+        *,
+        location: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if not self._weather_service:
+            raise ServerAPIError("Weather service is not configured.")
+        try:
+            return self._weather_service.fetch(
+                location_query=location, latitude=latitude, longitude=longitude
+            )
+        except WeatherServiceError as exc:
+            if getattr(self._weather_service, "supports_fallback", False):
+                return self._weather_service.fallback_payload(
+                    location_query=location,
+                    latitude=latitude,
+                    longitude=longitude,
+                    reason=str(exc),
+                )
+            raise ServerAPIError(str(exc)) from exc
 
     def fetch_latest_rides(self, *, limit: int = 5) -> List[Dict[str, Any]]:
-        return self._send_request("latest_rides", {"limit": limit})
+        try:
+            return self._send_request("latest_rides", {"limit": limit})
+        except ServerAPIError as exc:
+            if self._enable_demo_fallbacks:
+                logger.warning(
+                    "latest_rides unavailable from backend (%s). Using demo data.", exc
+                )
+                return self._fallback_latest_rides(limit)
+            raise
 
     def fetch_drivers(
         self,
@@ -506,6 +585,32 @@ class ServerAPI:
             result["session_token"] = payload.get("session_token")
         return result
 
+    def _fallback_latest_rides(self, limit: int) -> List[Dict[str, Any]]:
+        sample_rides: List[Dict[str, Any]] = [
+            {
+                "id": 901,
+                "from": "Hamra",
+                "to": "AUB Main Gate",
+                "time": _ts_offset(45),
+                "status": "PENDING",
+            },
+            {
+                "id": 902,
+                "from": "Baabda",
+                "to": "AUB Medical Gate",
+                "time": _ts_offset(120),
+                "status": "ACCEPTED",
+            },
+            {
+                "id": 903,
+                "from": "Saida",
+                "to": "AUB Campus",
+                "time": _ts_offset(180),
+                "status": "PENDING",
+            },
+        ]
+        return sample_rides[: max(1, limit)]
+
 
 # Mock implementation -----------------------------------------------------------
 
@@ -531,14 +636,22 @@ class MockServerAPI(ServerAPI):
     it by default so the interface can be demonstrated without a backend.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        weather_service: Optional[WeatherService] = None,
+        *,
+        enable_demo_fallbacks: Optional[bool] = None,
+    ) -> None:
+        super().__init__(
+            weather_service=weather_service, enable_demo_fallbacks=enable_demo_fallbacks
+        )
         self.db = MockDatabase(
             drivers=[
                 {
                     "id": "drv-100",
                     "user_id": 201,
                     "name": "Lina A.",
+                    "gender": "female",
                     "area": "Hamra",
                     "rating": 4.9,
                     "vehicle": "Toyota Corolla 2018",
@@ -549,6 +662,7 @@ class MockServerAPI(ServerAPI):
                     "id": "drv-101",
                     "user_id": 202,
                     "name": "Omar K.",
+                    "gender": "male",
                     "area": "Ashrafieh",
                     "rating": 4.7,
                     "vehicle": "Hyundai i10 2021",
@@ -559,6 +673,7 @@ class MockServerAPI(ServerAPI):
                     "id": "drv-102",
                     "user_id": 203,
                     "name": "Ali H.",
+                    "gender": "male",
                     "area": "Baabda",
                     "rating": 4.5,
                     "vehicle": "Kia Picanto 2019",
@@ -623,6 +738,7 @@ class MockServerAPI(ServerAPI):
             "latitude": 33.8938,
             "longitude": 35.5018,
             "role": "passenger",
+             "gender": _DEFAULT_GENDER,
             "theme": "bolt_light",
             "notifications": True,
         }
@@ -688,9 +804,17 @@ class MockServerAPI(ServerAPI):
         self._logged_in = False
         return {"message": "Logged out."}
 
-    def _handle_weather(self, _: Dict[str, Any]) -> Dict[str, Any]:
+    def fetch_weather(
+        self,
+        *,
+        location: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+    ) -> Dict[str, Any]:
         self._require_login()
-        return {"temp_c": 23, "status": "Sunny", "humidity": 60, "city": "Beirut"}
+        return super().fetch_weather(
+            location=location, latitude=latitude, longitude=longitude
+        )
 
     def _handle_latest_rides(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         self._require_login()
@@ -747,6 +871,7 @@ class MockServerAPI(ServerAPI):
                     "driver_id": driver.get("user_id") or driver.get("id"),
                     "username": driver.get("name") or driver.get("id"),
                     "name": driver.get("name"),
+                    "gender": driver.get("gender", _DEFAULT_GENDER),
                     "session_token": f"mock-driver-{driver.get('id')}",
                     "distance_km": round(0.8 * idx, 2),
                     "duration_min": 5 * idx,
@@ -1034,6 +1159,7 @@ class MockServerAPI(ServerAPI):
                 or self._user.get("username")
                 or "You",
                 "role": self._user.get("role") or "passenger",
+                "gender": self._user.get("gender", _DEFAULT_GENDER),
             }
         driver = next(
             (d for d in self.db.drivers if d.get("user_id") == user_id), None
@@ -1043,8 +1169,14 @@ class MockServerAPI(ServerAPI):
                 "user_id": user_id,
                 "name": driver.get("name") or driver.get("username") or "Driver",
                 "role": "driver",
+                "gender": driver.get("gender", _DEFAULT_GENDER),
             }
-        return {"user_id": user_id, "name": f"User {user_id}", "role": "passenger"}
+        return {
+            "user_id": user_id,
+            "name": f"User {user_id}",
+            "role": "passenger",
+            "gender": _DEFAULT_GENDER,
+        }
 
     def _mock_request_by_id(self, request_id: str) -> Optional[Dict[str, Any]]:
         return next(
@@ -1223,10 +1355,24 @@ class AuthBackendServerAPI(MockServerAPI):
     """
 
     def __init__(
-        self, host: str = "127.0.0.1", port: int = 5000, timeout: float = 8.0
+        self,
+        host: str = "127.0.0.1",
+        port: int = 5000,
+        timeout: float = 8.0,
+        weather_service: Optional[WeatherService] = None,
+        *,
+        enable_demo_fallbacks: Optional[bool] = None,
     ) -> None:
-        super().__init__()
-        self._backend = ServerAPI(host=host, port=port, timeout=timeout)
+        super().__init__(
+            weather_service=weather_service, enable_demo_fallbacks=enable_demo_fallbacks
+        )
+        self._backend = ServerAPI(
+            host=host,
+            port=port,
+            timeout=timeout,
+            weather_service=weather_service,
+            enable_demo_fallbacks=enable_demo_fallbacks,
+        )
 
     def register_user(
         self,
@@ -1236,6 +1382,7 @@ class AuthBackendServerAPI(MockServerAPI):
         username: str,
         password: str,
         role: str | bool,
+        gender: Optional[str] = None,
         area: str,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
@@ -1247,6 +1394,7 @@ class AuthBackendServerAPI(MockServerAPI):
             username=username,
             password=password,
             role=role,
+            gender=gender,
             area=area,
             latitude=latitude,
             longitude=longitude,
@@ -1260,6 +1408,7 @@ class AuthBackendServerAPI(MockServerAPI):
         self._user.setdefault("username", cleaned_username)
         self._user.setdefault("email", email.strip())
         self._user.setdefault("area", area.strip())
+        self._user.setdefault("gender", _normalize_client_gender(gender))
         if latitude is not None and longitude is not None:
             self._user["latitude"] = float(latitude)
             self._user["longitude"] = float(longitude)

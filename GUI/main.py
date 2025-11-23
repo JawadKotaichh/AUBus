@@ -6,7 +6,7 @@ import argparse
 from typing import List, Optional
 
 from gui import run
-from server_api import AuthBackendServerAPI, ServerAPI
+from server_api import ServerAPI
 
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -19,11 +19,6 @@ Theme Options:
   modern_dark     Sleek dark mode with vibrant highlights
   ocean           Professional cyan/teal theme inspired by water
         """,
-    )
-    parser.add_argument(
-        "--auth-backend",
-        action="store_true",
-        help="Send register/login requests to the live backend instead of the mock API.",
     )
     parser.add_argument(
         "--server-host",
@@ -54,18 +49,12 @@ Theme Options:
 def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
 
-    print(f"🚗 Starting AUBus with theme: {args.theme}")
+    print(f"Starting AUBus with theme: {args.theme}")
 
-    if args.auth_backend:
-        api: ServerAPI = ServerAPI(
-            host=args.server_host, port=args.server_port, timeout=args.timeout
-        )
-        print(f"✓ Connected to backend at {args.server_host}:{args.server_port}")
-    else:
-        api = AuthBackendServerAPI(
-            host=args.server_host, port=args.server_port, timeout=args.timeout
-        )
-        print("✓ Using mock API for development")
+    api: ServerAPI = ServerAPI(
+        host=args.server_host, port=args.server_port, timeout=args.timeout
+    )
+    print(f"Connected to backend at {args.server_host}:{args.server_port}")
 
     run(api=api, theme=args.theme)
 

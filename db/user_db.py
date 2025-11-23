@@ -34,6 +34,33 @@ def _payload_from_status(status: db_msg_status, content: Any) -> Dict[str, Any]:
 
 
 ALLOWED_EMAIL_DOMAINS: Tuple[str, ...] = ("@mail.aub.edu", "@aub.edu.lb")
+ALLOWED_GENDERS: Tuple[str, ...] = (
+    "female",
+    "male",
+)
+_DEFAULT_GENDER_VALUE = "female"
+_GENDER_SYNONYMS = {
+    "f": "female",
+    "woman": "female",
+    "female": "female",
+    "lady": "female",
+    "girl": "female",
+    "m": "male",
+    "man": "male",
+    "male": "male",
+    "boy": "male",
+    "nonbinary": _DEFAULT_GENDER_VALUE,
+    "non-binary": _DEFAULT_GENDER_VALUE,
+    "other": _DEFAULT_GENDER_VALUE,
+    "na": _DEFAULT_GENDER_VALUE,
+    "n/a": _DEFAULT_GENDER_VALUE,
+    "prefer_not_to_say": _DEFAULT_GENDER_VALUE,
+    "prefer not to say": _DEFAULT_GENDER_VALUE,
+    "prefer_not_say": _DEFAULT_GENDER_VALUE,
+    "prefer not say": _DEFAULT_GENDER_VALUE,
+    "": _DEFAULT_GENDER_VALUE,
+}
+_GENDER_ENUM_SQL = ", ".join(f"'{value}'" for value in ALLOWED_GENDERS)
 _REQUIRED_SCHEMA_TABLES: Tuple[str, ...] = (
     "users",
     "schedule",
@@ -146,6 +173,24 @@ def _email_requirement() -> str:
     if prefix:
         return f"Email must end with {prefix} or {suffix}"
     return f"Email must end with {suffix}"
+
+
+def _normalize_gender(value: Any) -> str:
+    """
+    Normalize a gender input value into one of the ALLOWED_GENDERS entries.
+    """
+    if value is None:
+        return _DEFAULT_GENDER_VALUE
+    text = str(value).strip().lower()
+    if text in ALLOWED_GENDERS:
+        return text
+    if not text:
+        return _DEFAULT_GENDER_VALUE
+    alias = _GENDER_SYNONYMS.get(text)
+    if alias:
+        return alias
+    allowed_display = ", ".join(ALLOWED_GENDERS)
+    raise ValueError(f"Gender must be one of: {allowed_display}.")
 
 
 _ONLINE_HEARTBEAT_WINDOW_SECONDS = 5 * 60  # 5 minutes
@@ -300,6 +345,45 @@ def _schema_is_initialized() -> bool:
     return set(_REQUIRED_SCHEMA_TABLES).issubset(existing)
 
 
+def _ensure_gender_column(cursor: sqlite3.Cursor) -> None:
+    try:
+        cursor.execute("PRAGMA table_info(users)")
+    except sqlite3.Error:
+        return
+    columns = {row[1] for row in cursor.fetchall()}
+    if "gender" in columns:
+        return
+    logger.info("Adding missing 'gender' column to users table.")
+    cursor.execute(
+        f"""
+        ALTER TABLE users
+        ADD COLUMN gender TEXT NOT NULL DEFAULT '{_DEFAULT_GENDER_VALUE}'
+        CHECK (gender IN ({_GENDER_ENUM_SQL}))
+        """
+    )
+
+
+def _apply_schema_upgrades(cursor: sqlite3.Cursor) -> None:
+    _ensure_gender_column(cursor)
+    _sanitize_gender_values(cursor)
+
+
+def _sanitize_gender_values(cursor: sqlite3.Cursor) -> None:
+    placeholders = ", ".join("?" for _ in ALLOWED_GENDERS)
+    try:
+        cursor.execute(
+            f"""
+            UPDATE users
+            SET gender = ?
+            WHERE gender IS NULL
+              OR LOWER(gender) NOT IN ({placeholders})
+            """,
+            (_DEFAULT_GENDER_VALUE, *ALLOWED_GENDERS),
+        )
+    except sqlite3.Error:
+        return
+
+
 def creating_initial_db() -> DBResponse:
     try:
         db = DB_CONNECTION
@@ -308,7 +392,9 @@ def creating_initial_db() -> DBResponse:
         db_file_exists = db_path.exists() if db_path else False
         logger.info("DB init requested. path=%s exists=%s", db_path, db_file_exists)
         if db_file_exists and _schema_is_initialized():
-            logger.info("Existing DB schema detected. Skipping creation.")
+            _apply_schema_upgrades(cursor)
+            db.commit()
+            logger.info("Existing DB schema detected. Applied pending upgrades if any.")
             return DBResponse(
                 db_response_type.SESSION_CREATED,
                 db_msg_status.OK,
@@ -335,6 +421,7 @@ def creating_initial_db() -> DBResponse:
                 password_salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE CHECK ({email_constraint}),
+                gender TEXT NOT NULL DEFAULT '{_DEFAULT_GENDER_VALUE}' CHECK (gender IN ({_GENDER_ENUM_SQL})),
                 area TEXT NOT NULL,
                 latitude REAL NOT NULL CHECK (latitude BETWEEN -90.0 AND 90.0),
                 longitude REAL NOT NULL CHECK (longitude BETWEEN -180.0 AND 180.0),
@@ -350,6 +437,7 @@ def creating_initial_db() -> DBResponse:
             CREATE INDEX IF NOT EXISTS idx_users_location ON users(latitude, longitude);
             """
         )
+        _apply_schema_upgrades(cursor)
         init_schema_schedule()
         init_ride_schema()
         init_user_sessions_schema()
@@ -395,6 +483,7 @@ def create_user(
     area: str,
     is_driver: int,
     schedule,
+    gender: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
     avg_rating_driver: float = 0.0,
@@ -422,6 +511,15 @@ def create_user(
                     db_msg_status.INVALID_INPUT, _email_requirement()
                 ),
             )
+        try:
+            normalized_gender = _normalize_gender(gender)
+        except ValueError as gender_err:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.INVALID_INPUT,
+                _payload_from_status(db_msg_status.INVALID_INPUT, str(gender_err)),
+            )
+
         cleaned_area = (area or "").strip()
         if not cleaned_area:
             return DBResponse(
@@ -479,6 +577,7 @@ def create_user(
                 password_salt,
                 password_hash,
                 email,
+                gender,
                 area,
                 latitude,
                 longitude,
@@ -488,7 +587,7 @@ def create_user(
                 avg_rating_rider,
                 number_of_rides_driver,
                 number_of_rides_rider
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -496,6 +595,7 @@ def create_user(
                 salt,
                 hash_,
                 cleaned_email,
+                normalized_gender,
                 cleaned_area,
                 float(latitude),
                 float(longitude),
@@ -510,10 +610,11 @@ def create_user(
         conn.commit()
         user_id = cur.lastrowid
         logger.info(
-            "User created: id=%s username=%s email=%s area=%s driver=%s coords=%s/%s source=%s",
+            "User created: id=%s username=%s email=%s gender=%s area=%s driver=%s coords=%s/%s source=%s",
             user_id,
             username,
             cleaned_email,
+            normalized_gender,
             cleaned_area,
             bool(is_driver),
             latitude,
@@ -653,6 +754,45 @@ def update_email(user_id: int, new_email: str) -> DBResponse:
             db_msg_status.OK,
             _payload_from_status(
                 db_msg_status.OK, f"Email updated to {cleaned_email}."
+            ),
+        )
+    except Exception as e:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(e)),
+        )
+
+
+def update_gender(user_id: int, new_gender: str | None) -> DBResponse:
+    try:
+        normalized_gender = _normalize_gender(new_gender)
+    except ValueError as exc:
+        return DBResponse(
+            db_response_type.ERROR,
+            db_msg_status.INVALID_INPUT,
+            _payload_from_status(db_msg_status.INVALID_INPUT, str(exc)),
+        )
+    try:
+        conn = DB_CONNECTION
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE users SET gender=? WHERE id=?""",
+            (normalized_gender, user_id),
+        )
+        if cur.rowcount == 0:
+            return DBResponse(
+                db_response_type.ERROR,
+                db_msg_status.NOT_FOUND,
+                _payload_from_status(db_msg_status.NOT_FOUND, "User not found."),
+            )
+        conn.commit()
+        return DBResponse(
+            db_response_type.USER_UPDATED,
+            db_msg_status.OK,
+            _payload_from_status(
+                db_msg_status.OK,
+                f"Gender updated to {normalized_gender}.",
             ),
         )
     except Exception as e:
@@ -1063,6 +1203,7 @@ def get_user_profile(user_id: int) -> DBResponse:
                 name,
                 username,
                 email,
+                gender,
                 area,
                 latitude,
                 longitude,
@@ -1091,16 +1232,17 @@ def get_user_profile(user_id: int) -> DBResponse:
             "name": row[1],
             "username": row[2],
             "email": row[3],
-            "area": row[4],
-            "latitude": float(row[5]) if row[5] is not None else None,
-            "longitude": float(row[6]) if row[6] is not None else None,
-            "avg_rating_driver": float(row[7]) if row[7] is not None else 0.0,
-            "avg_rating_rider": float(row[8]) if row[8] is not None else 0.0,
-            "number_of_rides_driver": int(row[9] or 0),
-            "number_of_rides_rider": int(row[10] or 0),
-            "is_driver": bool(row[11]),
+            "gender": row[4] or _DEFAULT_GENDER_VALUE,
+            "area": row[5],
+            "latitude": float(row[6]) if row[6] is not None else None,
+            "longitude": float(row[7]) if row[7] is not None else None,
+            "avg_rating_driver": float(row[8]) if row[8] is not None else 0.0,
+            "avg_rating_rider": float(row[9]) if row[9] is not None else 0.0,
+            "number_of_rides_driver": int(row[10] or 0),
+            "number_of_rides_rider": int(row[11] or 0),
+            "is_driver": bool(row[12]),
         }
-        schedule_id = row[12]
+        schedule_id = row[13]
         if schedule_id:
             schedule = _fetch_schedule_payload(int(schedule_id))
             if schedule:
@@ -1177,6 +1319,7 @@ def fetch_online_drivers(
             u.id,
             u.name,
             u.username,
+            u.gender,
             u.area,
             u.latitude,
             u.longitude,
@@ -1249,7 +1392,7 @@ def fetch_online_drivers(
 
     drivers: List[Dict[str, Any]] = []
     for row in rows:
-        dep_time, ret_time = row[10], row[11]
+        dep_time, ret_time = row[11], row[12]
         # Skip time window only if enforcement is enabled
         if enforce_schedule_window and not _time_is_within_window(
             request_dt, dep_time, ret_time
@@ -1260,14 +1403,15 @@ def fetch_online_drivers(
                 "id": int(row[0]),
                 "name": row[1] or row[2],
                 "username": row[2],
-                "area": row[3],
-                "latitude": float(row[4]),
-                "longitude": float(row[5]),
-                "avg_rating_driver": float(row[6]) if row[6] is not None else 0.0,
-                "avg_rating_rider": float(row[7]) if row[7] is not None else 0.0,
-                "number_of_rides_driver": int(row[8] or 0),
-                "last_seen": row[9],
-                "session_token": row[12],
+                "gender": row[3] or _DEFAULT_GENDER_VALUE,
+                "area": row[4],
+                "latitude": float(row[5]),
+                "longitude": float(row[6]),
+                "avg_rating_driver": float(row[7]) if row[7] is not None else 0.0,
+                "avg_rating_rider": float(row[8]) if row[8] is not None else 0.0,
+                "number_of_rides_driver": int(row[9] or 0),
+                "last_seen": row[10],
+                "session_token": row[13],
                 "schedule_window": {"start": dep_time, "end": ret_time},
             }
         )

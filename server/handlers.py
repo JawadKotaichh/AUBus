@@ -25,6 +25,7 @@ from db.user_db import (
     update_user_schedule,
     update_area,
     update_driver_flag,
+    update_gender,
     get_user_profile,
 )
 from db.schedules import DAY_TO_COLS, ScheduleDay, create_schedule
@@ -124,7 +125,15 @@ def handle_register(
         client_address,
         _redact_auth_payload(payload),
     )
-    required_fields = ["name", "username", "password", "email", "area", "is_driver"]
+    required_fields = [
+        "name",
+        "username",
+        "password",
+        "email",
+        "gender",
+        "area",
+        "is_driver",
+    ]
     missing = [f for f in required_fields if f not in payload]
     if missing:
         logger.error("Register payload missing fields: %s", ", ".join(missing))
@@ -136,6 +145,7 @@ def handle_register(
     password = str(payload["password"])
     email = str(payload["email"])
     area = str(payload["area"])
+    gender = payload.get("gender")
     is_driver = int(payload["is_driver"])
     latitude = payload.get("latitude")
     longitude = payload.get("longitude")
@@ -162,6 +172,7 @@ def handle_register(
         email=email,
         username=username,
         password=password,
+        gender=gender,
         area=area,
         is_driver=is_driver,
         schedule=schedule_id,
@@ -381,6 +392,8 @@ def handle_update_profile(payload: Dict[str, Any]) -> ServerResponse:
     if role is not None:
         is_driver = str(role).strip().lower() == "driver"
         responses.append(update_driver_flag(user_id=user_id, is_driver=is_driver))
+    if "gender" in payload:
+        responses.append(update_gender(user_id=user_id, new_gender=payload.get("gender")))
     if "schedule" in payload:
         schedule_days, schedule_error = _normalize_schedule_payload(payload.get("schedule"))
         if schedule_error:
@@ -491,6 +504,7 @@ def get_drivers_with_filters(payload: Dict[str, Any]) -> ServerResponse:
                 "id": driver.get("id"),
                 "name": driver.get("name") or driver.get("username"),
                 "username": driver.get("username"),
+                "gender": driver.get("gender"),
                 "area": area_display,
                 "rating": driver.get("avg_rating_driver", 0.0),
                 "vehicle": vehicle_display,

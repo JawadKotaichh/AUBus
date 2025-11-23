@@ -63,7 +63,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtMultimedia import QMediaCaptureSession, QAudioInput, QMediaRecorder
 
-from server_api import AuthBackendServerAPI, ServerAPI, ServerAPIError
+from server_api import ServerAPI, ServerAPIError
 from p2p_chat import PeerChatNode, PeerChatError
 
 ALLOWED_ZONES: List[str] = [
@@ -81,6 +81,13 @@ ALLOWED_ZONES: List[str] = [
     "Baabda",
     "Beirut",
 ]
+
+DEFAULT_GENDER = "female"
+GENDER_CHOICES: List[Tuple[str, str]] = [
+    ("female", "Female"),
+    ("male", "Male"),
+]
+GENDER_LABELS: Dict[str, str] = {value: label for value, label in GENDER_CHOICES}
 
 REQUEST_BUTTON_STYLE = """
 QPushButton#requestRideAction {
@@ -530,6 +537,27 @@ def aub_email_requirement() -> str:
     return f"Email must end with {suffix}"
 
 
+def normalize_gender_choice(value: Optional[str]) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in GENDER_LABELS:
+        return normalized
+    return DEFAULT_GENDER
+
+
+def gender_display_label(value: Optional[str]) -> str:
+    normalized = normalize_gender_choice(value)
+    return GENDER_LABELS.get(normalized, normalized.title())
+
+
+def set_gender_combo_value(combo: QComboBox, value: Optional[str]) -> None:
+    normalized = normalize_gender_choice(value)
+    idx = combo.findData(normalized)
+    if idx < 0:
+        idx = combo.findData(DEFAULT_GENDER)
+    if idx >= 0:
+        combo.setCurrentIndex(idx)
+
+
 def build_stylesheet(mode: str) -> str:
     colors = THEME_PALETTES.get(mode, THEME_PALETTES["bolt_light"])
     return f"""
@@ -788,6 +816,10 @@ class AuthPage(QWidget):
         self.reg_email = QLineEdit()
         self.reg_email.setPlaceholderText("netid@mail.aub.edu")
         self.reg_email.setToolTip(aub_email_requirement())
+        self.reg_gender = QComboBox()
+        for value, label in GENDER_CHOICES:
+            self.reg_gender.addItem(label, value)
+        set_gender_combo_value(self.reg_gender, DEFAULT_GENDER)
         self.reg_username = QLineEdit()
         self.reg_password = QLineEdit()
         self.reg_password.setEchoMode(QLineEdit.EchoMode.Password)
@@ -808,6 +840,7 @@ class AuthPage(QWidget):
 
         form.addRow("Full name", self.reg_name)
         form.addRow("Email", self.reg_email)
+        form.addRow("Gender", self.reg_gender)
         form.addRow("Username", self.reg_username)
         form.addRow("Password", self.reg_password)
         form.addRow("Role", self.reg_role)
@@ -860,6 +893,7 @@ class AuthPage(QWidget):
         username = self.reg_username.text().strip()
         area = self.reg_area.text().strip()
         role = self.reg_role.currentText()
+        gender_value = normalize_gender_choice(self.reg_gender.currentData())
         schedule_payload = None
         if role == "driver":
             schedule_payload, schedule_error = (
@@ -899,6 +933,7 @@ class AuthPage(QWidget):
                 username=username,
                 password=self.reg_password.text().strip(),
                 role=role,
+                gender=gender_value,
                 area=area,
                 latitude=(self._register_location or {}).get("latitude"),
                 longitude=(self._register_location or {}).get("longitude"),
@@ -1016,10 +1051,14 @@ class AuthPage(QWidget):
 
 
 class DashboardPage(QWidget):
-    def __init__(self, api: ServerAPI):
+    def __init__(self, api: ServerAPI) -> None:
         super().__init__()
         self.api = api
         self._session_token: Optional[str] = None
+        self._weather_query: Optional[str] = None
+        self._latitude: Optional[float] = None
+        self._longitude: Optional[float] = None
+
         layout = QVBoxLayout(self)
 
         self.stats_box = QGroupBox("Live Snapshot")
@@ -1057,41 +1096,108 @@ class DashboardPage(QWidget):
     def set_session_token(self, token: Optional[str]) -> None:
         self._session_token = token
 
+    def set_user_context(self, user: Optional[Dict[str, Any]]) -> None:
+        if not user:
+            self._weather_query = None
+            self._latitude = None
+            self._longitude = None
+            return
+        area = str(user.get("area") or "").strip()
+        self._weather_query = area or None
+        lat = user.get("latitude")
+        lng = user.get("longitude")
+        self._latitude = float(lat) if lat is not None else None
+        self._longitude = float(lng) if lng is not None else None
+
+    def clear_user_context(self) -> None:
+        self.set_user_context(None)
+
     def refresh(self) -> None:
         try:
-            weather = self.api.fetch_weather()
-            rides = self.api.fetch_latest_rides()
-            chats = (
-                self.api.fetch_chats(session_token=self._session_token)
-                if self._session_token
-                else []
+            weather = self.api.fetch_weather(
+                location=self._weather_query,
+                latitude=self._latitude,
+                longitude=self._longitude,
             )
         except ServerAPIError as exc:
-            self.weather_status.setText(str(exc))
-            self.weather_status.setStyleSheet("color: red;")
-            return
+            self._render_weather_error(str(exc))
+        else:
+            self._render_weather(weather)
 
+        rides: List[Dict[str, Any]] = []
+        rides_error: Optional[str] = None
+        try:
+            rides = self.api.fetch_latest_rides()
+        except ServerAPIError as exc:
+            rides_error = str(exc)
+
+        chats: List[Dict[str, Any]] = []
+        chats_error = False
+        if self._session_token:
+            try:
+                chats = self.api.fetch_chats(session_token=self._session_token)
+            except ServerAPIError:
+                chats_error = True
+
+        if rides_error:
+            self._render_rides_error(rides_error)
+            pending = accepted = None
+        else:
+            self._render_rides(rides)
+            pending = sum(
+                1 for ride in rides if str(ride.get("status", "")).lower() == "pending"
+            )
+            accepted = sum(
+                1 for ride in rides if str(ride.get("status", "")).lower() == "accepted"
+            )
+
+        self._update_stats(
+            pending=pending,
+            accepted=accepted,
+            chats_count=len(chats) if not chats_error else None,
+        )
+
+    def _render_weather(self, weather: Dict[str, Any]) -> None:
         self.weather_city.setText(weather.get("city", ""))
         self.weather_status.setText(weather.get("status", ""))
+        self.weather_status.setStyleSheet("")
         self.weather_temp.setText(str(weather.get("temp_c", "")))
         self.weather_humidity.setText(str(weather.get("humidity", "")))
 
+    def _render_weather_error(self, message: str) -> None:
+        self.weather_city.setText("-")
+        self.weather_status.setText(message)
+        self.weather_status.setStyleSheet("color: red;")
+        self.weather_temp.setText("-")
+        self.weather_humidity.setText("-")
+
+    def _render_rides(self, rides: List[Dict[str, Any]]) -> None:
         self.rides_list.clear()
         for ride in rides:
             item = QListWidgetItem(
                 f"{ride['from']} → {ride['to']} at {ride['time']} [{ride['status']}]"
             )
             self.rides_list.addItem(item)
+        if not rides:
+            self.rides_list.addItem("No recent rides found.")
 
-        pending = sum(
-            1 for ride in rides if str(ride.get("status", "")).lower() == "pending"
-        )
-        accepted = sum(
-            1 for ride in rides if str(ride.get("status", "")).lower() == "accepted"
-        )
-        self.pending_badge.update_value("Pending requests", str(pending))
-        self.accepted_badge.update_value("Accepted rides", str(accepted))
-        self.chats_badge.update_value("Active chats", str(len(chats)))
+    def _render_rides_error(self, message: str) -> None:
+        self.rides_list.clear()
+        self.rides_list.addItem(f"Unable to load rides: {message}")
+
+    def _update_stats(
+        self,
+        *,
+        pending: Optional[int],
+        accepted: Optional[int],
+        chats_count: Optional[int],
+    ) -> None:
+        def _format(value: Optional[int]) -> str:
+            return str(value) if value is not None else "—"
+
+        self.pending_badge.update_value("Pending requests", _format(pending))
+        self.accepted_badge.update_value("Accepted rides", _format(accepted))
+        self.chats_badge.update_value("Active chats", _format(chats_count))
 
 
 # Request ride -----------------------------------------------------------------
@@ -1744,7 +1850,7 @@ class SearchDriverPage(QWidget):
         self.refresh_btn.clicked.connect(self.refresh)
         filter_layout.addWidget(self.refresh_btn, 4, 0, 1, 2)
 
-        self.table = QTableWidget(0, 4)
+        self.table = QTableWidget(0, 5)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self._set_table_headers()
@@ -1782,7 +1888,7 @@ class SearchDriverPage(QWidget):
             self._show_placeholder("No drivers matched your filters.")
             return
         self.table.setRowCount(len(items))
-        self.table.setColumnCount(4)
+        self.table.setColumnCount(5)
         self._set_table_headers()
         for row, driver in enumerate(items):
             rating_value = driver.get("rating")
@@ -1796,13 +1902,17 @@ class SearchDriverPage(QWidget):
             name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 0, name_item)
 
+            gender_item = ro(gender_display_label(driver.get("gender")))
+            gender_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 1, gender_item)
+
             area_item = ro(driver.get("area") or "-")
             area_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 1, area_item)
+            self.table.setItem(row, 2, area_item)
 
             rating_item = ro(rating_display)
             rating_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 2, rating_item)
+            self.table.setItem(row, 3, rating_item)
             btn = QPushButton("Request ride")
             btn.setObjectName("driverRequestBtn")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1817,7 +1927,7 @@ class SearchDriverPage(QWidget):
             btn_layout.setContentsMargins(0, 0, 0, 0)
             btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             btn_layout.addWidget(btn)
-            self.table.setCellWidget(row, 3, button_container)
+            self.table.setCellWidget(row, 4, button_container)
 
     def reset_results(self) -> None:
         self._show_placeholder("Use the filters above to search for drivers.")
@@ -1839,7 +1949,7 @@ class SearchDriverPage(QWidget):
             self.request_driver_callback(driver)
 
     def _set_table_headers(self) -> None:
-        labels = ["Name", "Area", "Rating", "Actions"]
+        labels = ["Name", "Gender", "Area", "Rating", "Actions"]
         self.table.setHorizontalHeaderLabels(labels)
         header = self.table.horizontalHeader()
         for i in range(len(labels)):
@@ -2437,6 +2547,9 @@ class ProfilePage(QWidget):
         self.email_input = QLineEdit()
         self.email_input.setPlaceholderText("firstname.lastname@mail.aub.edu")
         self.email_input.setToolTip(aub_email_requirement())
+        self.gender_combo = QComboBox()
+        for value, label in GENDER_CHOICES:
+            self.gender_combo.addItem(label, value)
         self.area_input = QLineEdit()
         self.area_input.textChanged.connect(self._handle_area_text_changed)
         self._profile_popup = SuggestionPopup(self.area_input)
@@ -2453,6 +2566,7 @@ class ProfilePage(QWidget):
         self.area_lookup_status = QLabel()
         form.addRow("Username", self.username_input)
         form.addRow("Email", self.email_input)
+        form.addRow("Gender", self.gender_combo)
         form.addRow("Role", self.role_combo)
         form.addRow("Area", self.area_input)
         form.addRow("", self.area_lookup_status)
@@ -2508,6 +2622,7 @@ class ProfilePage(QWidget):
         ):
             widget.clear()
         self.role_combo.setCurrentIndex(0)
+        set_gender_combo_value(self.gender_combo, DEFAULT_GENDER)
         self.theme_combo.setCurrentText("bolt_light")
         self.notifications_combo.setCurrentIndex(0)
         self.area_lookup_status.clear()
@@ -2525,6 +2640,7 @@ class ProfilePage(QWidget):
         self._area_lookup_timer.stop()
         self.username_input.setText(self.user.get("username", ""))
         self.email_input.setText(self.user.get("email", ""))
+        set_gender_combo_value(self.gender_combo, self.user.get("gender"))
         self.area_input.setText(self.user.get("area", ""))
         lat = self.user.get("latitude")
         lng = self.user.get("longitude")
@@ -2679,6 +2795,7 @@ class ProfilePage(QWidget):
             "area": area,
             "password": self.password_input.text().strip(),
             "role": self.role_combo.currentText(),
+            "gender": normalize_gender_choice(self.gender_combo.currentData()),
         }
         if not payload.get("password"):
             payload.pop("password", None)
@@ -2735,7 +2852,7 @@ class ProfilePage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, api: Optional[ServerAPI] = None, theme: str = "bolt_light"):
         super().__init__()
-        self.api = api or AuthBackendServerAPI()
+        self.api = api or ServerAPI()
         self.chat_service = PeerChatNode()
         self.chat_service.start()
         self.theme = theme
@@ -3015,6 +3132,7 @@ class MainWindow(QMainWindow):
         self.profile_page.load_user(hydrated)
         self.request_page.set_user_context(hydrated)
         self.dashboard_page.set_session_token(hydrated.get("session_token"))
+        self.dashboard_page.set_user_context(hydrated)
         self.chats_page.set_user(hydrated)
         self.trips_page.set_user_context(hydrated)
         self._register_chat_endpoint(hydrated)
@@ -3048,6 +3166,8 @@ class MainWindow(QMainWindow):
         if self.user is None:
             self.user = {}
         self.user.update(updated_user)
+        self.dashboard_page.set_user_context(self.user)
+        self.dashboard_page.refresh()
         self._update_logged_in_banner()
 
     def _update_logged_in_banner(self) -> None:
@@ -3087,6 +3207,7 @@ class MainWindow(QMainWindow):
                 return
         self.user = None
         self.dashboard_page.set_session_token(None)
+        self.dashboard_page.clear_user_context()
         self.chat_service.clear()
         self.profile_page.load_user({})
         self.request_page.clear_user_context()
