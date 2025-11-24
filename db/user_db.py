@@ -1333,10 +1333,12 @@ def fetch_online_drivers(
             us.last_seen AS last_seen,
             s.{dep_col} AS dep_time,
             s.{ret_col} AS ret_time,
-            us.session_token AS session_token
+            us.session_token AS session_token,
+            dl.location AS driver_location_state
         FROM users AS u
         INNER JOIN user_sessions AS us ON us.user_id = u.id
         LEFT JOIN schedule AS s ON s.id = u.schedule_id
+        LEFT JOIN driver_locations AS dl ON dl.user_id = u.id
         WHERE
             u.is_driver = 1
             AND (strftime('%s','now') - strftime('%s', IFNULL(us.last_seen, CURRENT_TIMESTAMP))) <= ?
@@ -1397,6 +1399,7 @@ def fetch_online_drivers(
     drivers: List[Dict[str, Any]] = []
     for row in rows:
         dep_time, ret_time = row[11], row[12]
+        location_state = row[14]
         # Skip time window only if enforcement is enabled
         if enforce_schedule_window and not _time_is_within_window(
             request_dt, dep_time, ret_time
@@ -1416,6 +1419,7 @@ def fetch_online_drivers(
                 "number_of_rides_driver": int(row[9] or 0),
                 "last_seen": row[10],
                 "session_token": row[13],
+                "driver_location_state": location_state,
                 "schedule_window": {"start": dep_time, "end": ret_time},
             }
         )

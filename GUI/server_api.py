@@ -42,6 +42,7 @@ _ACTION_TO_REQUEST_TYPE = {
     "complete_ride": 24,
     "rate_driver": 25,
     "trips": 26,
+    "set_driver_location": 27,
 }
 _SERVER_STATUS_OK = 1
 _DEFAULT_THEME = "bolt_light"
@@ -411,6 +412,16 @@ class ServerAPI:
             payload["comment"] = comment
         return self._send_request("rate_driver", payload)
 
+    def set_driver_location(self, *, session_token: str, location: str) -> Dict[str, Any]:
+        token = str(session_token or "").strip()
+        if not token:
+            raise ServerAPIError("driver_session_id is required.")
+        normalized = str(location or "").strip().lower()
+        if normalized not in {"home", "aub"}:
+            raise ServerAPIError("location must be either 'home' or 'aub'.")
+        payload = {"driver_session_id": token, "location": normalized}
+        return self._send_request("set_driver_location", payload)
+
     def fetch_trips(
         self, *, session_token: str, filters: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -748,6 +759,7 @@ class MockServerAPI(ServerAPI):
             "theme": "bolt_light",
             "notifications": True,
         }
+        self._driver_location_state: Dict[str, str] = {}
         self._logged_in: bool = False  # 🔒 gate everything until login
         self._request_counter: int = 0
 
@@ -1638,6 +1650,13 @@ class AuthBackendServerAPI(MockServerAPI):
             driver_rating=driver_rating,
             comment=comment,
         )
+
+    def set_driver_location(self, *, session_token: str, location: str) -> Dict[str, Any]:
+        normalized = str(location or "").strip().lower()
+        if normalized not in {"home", "aub"}:
+            normalized = "home" if "home" in normalized else "aub"
+        self._driver_location_state[session_token] = normalized
+        return {"driver_id": self._user.get("user_id"), "location": normalized}
 
     def register_chat_endpoint(
         self, *, session_token: str, port: int

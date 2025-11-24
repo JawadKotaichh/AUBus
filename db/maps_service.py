@@ -1,7 +1,7 @@
 import os
 import logging
-from datetime import datetime
-from typing import Tuple, List, Dict, Any, TYPE_CHECKING
+from datetime import datetime, timedelta
+from typing import Tuple, List, Dict, Any, TYPE_CHECKING, Optional
 import requests
 from dotenv import load_dotenv
 from .protocol_db_server import db_msg_status, db_response_type, DBResponse
@@ -17,6 +17,9 @@ DISTANCE_MATRIX_URL = "https://maps.googleapis.com/maps/api/distancematrix/json"
 GEOCODE_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 FIND_PLACE_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
 PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+_SCHEDULE_ARRIVAL_GRACE_MINUTES = 5.0
+_TRIP_DIRECTION_TO_AUB = "to_aub"
+_TRIP_DIRECTION_FROM_AUB = "from_aub"
 
 
 def _check_api_key() -> None:
@@ -26,6 +29,20 @@ def _check_api_key() -> None:
 
 def coords_to_string(lat: float, lng: float) -> str:
     return f"{lat},{lng}"
+
+
+def _parse_db_timestamp(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _format_place_result(
@@ -275,10 +292,20 @@ def get_closest_online_drivers(
     passenger_zone,
     min_avg=0,
     requested_at: datetime | str | None = None,
+    *,
+    destination_lat: Optional[float] = None,
+    destination_long: Optional[float] = None,
+    trip_direction: Optional[str] = None,
+    arrival_reference: Optional[datetime] = None,
 ) -> DBResponse:
     """
     Returns up to `max_results` closest online drivers to the passenger,
     restricted to drivers in the same zone and above the given rating threshold.
+    When destination coordinates are provided and the trip direction is "to_aub",
+    drivers are further filtered so that their detour (driver -> rider plus rider -> AUB)
+    completes before their scheduled arrival on campus (with a small grace period).
+    `arrival_reference`, when provided, is used as the baseline datetime for those
+    schedule checks (helpful when user-selected pickup time differs from the DB query).
     """
     try:
         #   Fetch drivers in same zone
@@ -298,8 +325,17 @@ def get_closest_online_drivers(
                 payload={"drivers": []},
             )
 
-        zone_drivers = zone_drivers_response.payload["output"]["drivers"]
-
+        payload_wrapper = zone_drivers_response.payload or {}
+        output_payload = payload_wrapper.get("output") or {}
+        zone_drivers = output_payload.get("drivers", [])
+        request_dt: Optional[datetime] = None
+        requested_at_iso = output_payload.get("requested_at")
+        if isinstance(requested_at_iso, str) and requested_at_iso.strip():
+            try:
+                request_dt = datetime.fromisoformat(requested_at_iso.strip())
+            except ValueError:
+                request_dt = None
+        baseline_dt = arrival_reference or request_dt
         if not zone_drivers:
             return DBResponse(
                 type=db_response_type.DRIVERS_FOUND,
@@ -310,11 +346,38 @@ def get_closest_online_drivers(
         #  Compute distances for those drivers only
         driver_distances: List[Dict[str, Any]] = []
         rider_coords = f"{passenger_lat},{passenger_long}"
+        rider_to_destination_duration: Optional[float] = None
+        required_driver_location: Optional[str] = None
+        if trip_direction == _TRIP_DIRECTION_TO_AUB:
+            required_driver_location = "home"
+        elif trip_direction == _TRIP_DIRECTION_FROM_AUB:
+            required_driver_location = "aub"
+        if destination_lat is not None and destination_long is not None:
+            try:
+                (
+                    _,
+                    rider_to_destination_duration,
+                    _,
+                    _,
+                ) = get_distance_and_duration(
+                    rider_coords, coords_to_string(destination_lat, destination_long)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[maps_service] rider->destination distance calc failed: %s", exc
+                )
+                rider_to_destination_duration = None
         for driver in zone_drivers:
             lat = driver.get("latitude")
             lng = driver.get("longitude")
             if lat is None or lng is None:
                 continue
+            if required_driver_location:
+                driver_location_state = str(
+                    driver.get("driver_location_state") or ""
+                ).strip().lower()
+                if driver_location_state != required_driver_location:
+                    continue
             origin_coords = f"{lat},{lng}"
 
             try:
@@ -322,6 +385,20 @@ def get_closest_online_drivers(
                 distance_km, duration_min, _, _ = get_distance_and_duration(
                     origin_coords, rider_coords
                 )
+
+                if (
+                    trip_direction == _TRIP_DIRECTION_TO_AUB
+                    and baseline_dt is not None
+                    and rider_to_destination_duration is not None
+                ):
+                    if not _driver_can_arrive_before_schedule(
+                        driver,
+                        baseline_dt,
+                        duration_min,
+                        rider_to_destination_duration,
+                    ):
+                        continue
+
                 driver_distances.append(
                     {
                         "driver_id": driver.get("id"),
@@ -332,6 +409,7 @@ def get_closest_online_drivers(
                         "area": driver.get("area"),
                         "avg_rating_driver": driver.get("avg_rating_driver"),
                         "number_of_rides_driver": driver.get("number_of_rides_driver"),
+                        "driver_location_state": driver.get("driver_location_state"),
                         "distance_km": distance_km,
                         "duration_min": duration_min,
                         "latitude": lat,
@@ -368,6 +446,30 @@ def get_closest_online_drivers(
             status=db_msg_status.INVALID_INPUT,
             payload={"error": str(e)},
         )
+
+
+def _driver_can_arrive_before_schedule(
+    driver_entry: Dict[str, Any],
+    baseline_dt: datetime,
+    driver_to_rider_min: float,
+    rider_to_destination_min: float,
+) -> bool:
+    """
+    Check whether a driver can visit the rider and still reach campus before
+    their scheduled arrival time, allowing for a configurable grace window.
+    """
+    schedule_window = driver_entry.get("schedule_window") or {}
+    schedule_start_raw = schedule_window.get("start")
+    start_dt = _parse_db_timestamp(schedule_start_raw)
+    if start_dt is None:
+        return True
+    deadline_dt = datetime.combine(baseline_dt.date(), start_dt.time())
+    total_minutes = max(float(driver_to_rider_min or 0.0), 0.0) + max(
+        float(rider_to_destination_min or 0.0), 0.0
+    )
+    arrival_dt = baseline_dt + timedelta(minutes=total_minutes)
+    grace = timedelta(minutes=_SCHEDULE_ARRIVAL_GRACE_MINUTES)
+    return arrival_dt <= deadline_dt + grace
 
 
 # if __name__ == "__main__":

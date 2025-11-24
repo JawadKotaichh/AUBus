@@ -3,13 +3,24 @@ from __future__ import annotations
 import ipaddress
 import secrets
 import sqlite3
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from .db_connection import DB_CONNECTION
 from .protocol_db_server import DBResponse, db_msg_status, db_response_type
 
 
 _ACTIVE_SESSION_WINDOW_SECONDS = 5 * 60  # Align with heartbeat expectations.
+_DRIVER_LOCATION_CHOICES = {"home", "aub"}
+_DRIVER_LOCATION_ALIASES = {
+    "campus": "aub",
+    "aub": "aub",
+    "to_aub": "aub",
+    "at_aub": "aub",
+    "home": "home",
+    "house": "home",
+    "away": "home",
+    "from_home": "home",
+}
 
 
 def init_user_sessions_schema() -> None:
@@ -28,6 +39,12 @@ def init_user_sessions_schema() -> None:
             CHECK((port_number IS NULL) OR (port_number BETWEEN 0 AND 65535))
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+        CREATE TABLE IF NOT EXISTS driver_locations (
+            user_id INTEGER PRIMARY KEY,
+            location TEXT NOT NULL CHECK(location IN ('home','aub')),
+            updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
         """
     )
     DB_CONNECTION.commit()
@@ -65,6 +82,18 @@ def _ok_payload(output: Any) -> Dict[str, Any]:
 
 def _error_payload(message: str) -> Dict[str, Any]:
     return {"output": None, "error": message}
+
+
+def _normalize_driver_location(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    if value is None:
+        return None, "location is required."
+    normalized = str(value).strip().lower()
+    if normalized in _DRIVER_LOCATION_CHOICES:
+        return normalized, None
+    alias = _DRIVER_LOCATION_ALIASES.get(normalized)
+    if alias:
+        return alias, None
+    return None, "location must be either 'home' or 'aub'."
 
 
 def create_session(
@@ -354,3 +383,67 @@ def get_online_users():
     return [
         row[0] for row in cur.fetchall()
     ]  # THIS WILL RETURN A LIST OF IDS FOR ALL ONLINE USER, WE CAN USE IN ALL FILTERING QUERIES
+
+
+def set_driver_location(user_id: int, location: Any) -> DBResponse:
+    normalized, error = _normalize_driver_location(location)
+    if error:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(error),
+        )
+    try:
+        DB_CONNECTION.execute(
+            """
+            INSERT INTO driver_locations (user_id, location, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                location = excluded.location,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, normalized),
+        )
+        DB_CONNECTION.commit()
+        return DBResponse(
+            type=db_response_type.SESSION_CREATED,
+            status=db_msg_status.OK,
+            payload=_ok_payload({"user_id": user_id, "location": normalized}),
+        )
+    except sqlite3.Error as exc:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(str(exc)),
+        )
+
+
+def get_driver_location(user_id: int) -> DBResponse:
+    try:
+        cur = DB_CONNECTION.execute(
+            """
+            SELECT location, updated_at
+            FROM driver_locations
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return DBResponse(
+                type=db_response_type.ERROR,
+                status=db_msg_status.NOT_FOUND,
+                payload=_error_payload("Driver location not set."),
+            )
+        payload = {"user_id": user_id, "location": row[0], "updated_at": row[1]}
+        return DBResponse(
+            type=db_response_type.SESSION_CREATED,
+            status=db_msg_status.OK,
+            payload=_ok_payload(payload),
+        )
+    except sqlite3.Error as exc:
+        return DBResponse(
+            type=db_response_type.ERROR,
+            status=db_msg_status.INVALID_INPUT,
+            payload=_error_payload(str(exc)),
+        )

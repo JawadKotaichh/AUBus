@@ -39,6 +39,7 @@ class client_request_type(enum.IntEnum):
     COMPLETE_RIDE = 24
     RATE_DRIVER = 25
     LIST_TRIPS = 26
+    SET_DRIVER_LOCATION = 27
 
 
 @dataclass(frozen=True)

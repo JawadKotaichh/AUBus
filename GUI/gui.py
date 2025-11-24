@@ -3119,6 +3119,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AUBus Client")
         self.resize(1200, 800)
         self.user: Optional[Dict[str, Any]] = None
+        self._driver_location_choice: Optional[str] = None
+        self._driver_location_prompted = False
+        self._driver_location_dialog_open = False
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -3192,6 +3195,21 @@ class MainWindow(QMainWindow):
         self.profile_page.profile_updated.connect(self._on_profile_updated)
         self.profile_page.logout_requested.connect(self._handle_logout)
         self.apply_theme(theme)
+
+        status_bar = self.statusBar()
+        self._driver_location_label = QLabel("Driver location: not set")
+        self._driver_location_label.setObjectName("driverLocationLabel")
+        self._driver_location_label.setStyleSheet("color: #6B6F76;")
+        self._driver_location_label.setVisible(False)
+        self._driver_location_btn = QPushButton("Update driver location")
+        self._driver_location_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._driver_location_btn.setVisible(False)
+        self._driver_location_btn.clicked.connect(
+            lambda: self._open_driver_location_dialog(force=True)
+        )
+        status_bar.addPermanentWidget(self._driver_location_label)
+        status_bar.addPermanentWidget(self._driver_location_btn)
+        self._update_driver_location_widgets()
 
     def _current_theme_colors(self) -> Dict[str, str]:
         return THEME_PALETTES.get(self.theme, THEME_PALETTES["bolt_light"])
@@ -3374,6 +3392,8 @@ class MainWindow(QMainWindow):
         target_page = self._tabs[idx][1]
         self._apply_tab_icon_states()
         self.stack.setCurrentWidget(target_page)
+        if target_page is self.dashboard_page:
+            self._prompt_driver_location_if_needed()
 
     def _hydrate_user_from_server(self, user: Dict[str, Any]) -> Dict[str, Any]:
         user_id = (user or {}).get("user_id")
@@ -3389,6 +3409,12 @@ class MainWindow(QMainWindow):
     def _on_authenticated(self, user: Dict[str, Any]) -> None:
         hydrated = self._hydrate_user_from_server(user)
         self.user = hydrated
+        self._driver_location_choice = (
+            str(hydrated.get("driver_location_state")).strip().lower()
+            if hydrated.get("driver_location_state")
+            else None
+        )
+        self._driver_location_prompted = False
         self.profile_page.load_user(hydrated)
         self.request_page.set_user_context(hydrated)
         self.search_page.set_user_context(hydrated)
@@ -3405,6 +3431,7 @@ class MainWindow(QMainWindow):
         self.search_page.reset_results()
         self.chats_page.refresh()
         self.trips_page.refresh()
+        self._update_driver_location_widgets()
 
         self._switch_tab(0)
 
@@ -3432,6 +3459,7 @@ class MainWindow(QMainWindow):
         self.request_page.set_user_context(self.user)
         self.search_page.set_user_context(self.user)
         self._update_logged_in_banner()
+        self._update_driver_location_widgets()
 
     def _update_logged_in_banner(self) -> None:
         if not self.user:
@@ -3439,6 +3467,102 @@ class MainWindow(QMainWindow):
         username = self.user.get("username", "")
         if username:
             self.statusBar().showMessage(f"Logged in as {username}")
+
+    def _user_is_driver(self, user: Optional[Dict[str, Any]]) -> bool:
+        if not user:
+            return False
+        role_value = str(user.get("role") or "").strip().lower()
+        if role_value == "driver":
+            return True
+        return bool(user.get("is_driver"))
+
+    def _update_driver_location_widgets(self) -> None:
+        is_driver = self._user_is_driver(self.user)
+        if not is_driver:
+            self._driver_location_label.setVisible(False)
+            self._driver_location_btn.setVisible(False)
+            return
+        label_text = (
+            "Driver location: AUB"
+            if self._driver_location_choice == "aub"
+            else "Driver location: home"
+            if self._driver_location_choice == "home"
+            else "Driver location: not set"
+        )
+        self._driver_location_label.setText(label_text)
+        self._driver_location_label.setVisible(True)
+        self._driver_location_btn.setVisible(True)
+
+    def _prompt_driver_location_if_needed(self) -> None:
+        if not self._user_is_driver(self.user):
+            return
+        if self._driver_location_choice and self._driver_location_prompted:
+            return
+        self._open_driver_location_dialog(force=False)
+
+    def _open_driver_location_dialog(self, *, force: bool) -> None:
+        if not self._user_is_driver(self.user):
+            return
+        if self._driver_location_dialog_open:
+            return
+        if not force and self._driver_location_prompted:
+            return
+        session_token = (self.user or {}).get("session_token")
+        if not session_token:
+            return
+        self._driver_location_dialog_open = True
+        try:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Driver availability")
+            msg.setText(
+                "Where are you right now?\n\n"
+                "Let riders know if you're already at AUB or still at home."
+            )
+            msg.setIcon(QMessageBox.Icon.Question)
+            aub_btn = msg.addButton("I'm at AUB", QMessageBox.ButtonRole.AcceptRole)
+            home_btn = msg.addButton("I'm at home", QMessageBox.ButtonRole.ActionRole)
+            msg.exec()
+            chosen = msg.clickedButton()
+            if chosen is None:
+                if not force:
+                    self._driver_location_prompted = False
+                return
+            location = "aub" if chosen is aub_btn else "home"
+            self._submit_driver_location(location)
+        finally:
+            self._driver_location_dialog_open = False
+
+    def _submit_driver_location(self, location: str) -> None:
+        if not self.user:
+            return
+        session_token = self.user.get("session_token")
+        if not session_token:
+            self.statusBar().showMessage(
+                "Unable to update driver location (missing session).", 4000
+            )
+            return
+        try:
+            response = self.api.set_driver_location(
+                session_token=session_token, location=location
+            )
+        except ServerAPIError as exc:
+            self.statusBar().showMessage(
+                f"Failed to update driver location: {exc}", 5000
+            )
+            self._driver_location_prompted = False
+            return
+        stored_location = (
+            str((response or {}).get("location") or location).strip().lower()
+        )
+        self._driver_location_choice = stored_location
+        if self.user is not None:
+            self.user["driver_location_state"] = stored_location
+        self._driver_location_prompted = True
+        self._update_driver_location_widgets()
+        readable = "AUB" if stored_location == "aub" else "home"
+        self.statusBar().showMessage(
+            f"Driver location updated: currently at {readable}.", 4000
+        )
 
     def _open_profile(self) -> None:
         self.stack.setCurrentWidget(self.profile_page)
@@ -3469,6 +3593,9 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Logout failed: {exc}", 4000)
                 return
         self.user = None
+        self._driver_location_choice = None
+        self._driver_location_prompted = False
+        self._update_driver_location_widgets()
         self.dashboard_page.set_session_token(None)
         self.dashboard_page.clear_user_context()
         self.chat_service.clear()

@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from db.ride import create_ride, update_ride, get_ride, RideStatus
@@ -8,7 +9,12 @@ from server.server_client_protocol import (
     server_response_type,
     msg_status,
 )
-from db.user_sessions import get_active_session, touch_session, get_session_by_user
+from db.user_sessions import (
+    get_active_session,
+    touch_session,
+    get_session_by_user,
+    set_driver_location,
+)
 from db.user_db import (
     get_user_profile,
     get_rides_driver,
@@ -28,6 +34,8 @@ from db.ride_requests import (
     mark_request_completed,
     cancel_request as cancel_driver_assignment,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def handle_p2p(
@@ -499,6 +507,50 @@ def _coerce_rider_location_flag(
     return None, "rider_location must be boolean-like (1/AUB or 0/home)."
 
 
+def _normalize_driver_location_choice(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    if value is None:
+        return None, "location is required."
+    normalized = str(value).strip().lower()
+    if normalized in {"aub", "campus", "to_aub", "at_aub"}:
+        return "aub", None
+    if normalized in {"home", "house", "away", "from_home"}:
+        return "home", None
+    return None, "location must be either 'aub' or 'home'."
+
+
+def handle_set_driver_location(payload: Dict[str, Any]) -> ServerResponse:
+    session_token = str(payload.get("driver_session_id") or "").strip()
+    if not session_token:
+        return _error_server("driver_session_id is required.")
+    location_choice, error = _normalize_driver_location_choice(payload.get("location"))
+    if error:
+        return _error_server(error)
+    session_response = get_active_session(session_id=session_token)
+    if session_response.status != db_msg_status.OK:
+        err = (
+            session_response.payload.get("error")
+            if session_response.payload
+            else "Unknown session error"
+        )
+        return _error_server(f"Session verification failed: {err}")
+    session_output = session_response.payload.get("output") or {}
+    user_id = session_output.get("user_id")
+    if user_id is None:
+        return _error_server("Session lookup did not return a user id.")
+    store_response = set_driver_location(user_id=int(user_id), location=location_choice)
+    if store_response.status != db_msg_status.OK:
+        err = (
+            store_response.payload.get("error")
+            if store_response.payload
+            else "Unable to persist driver location."
+        )
+        return _error_server(err)
+    return _ok_server(
+        payload={"driver_id": int(user_id), "location": location_choice},
+        resp_type=server_response_type.PROFILE_UPDATED,
+    )
+
+
 def _get_aub_coordinates() -> Tuple[float, float, str]:
     global _AUB_COORDINATES_CACHE
     if _AUB_COORDINATES_CACHE is None:
@@ -672,6 +724,16 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
 
     zone = zone_for_coordinates(passenger_lat, passenger_long)
     passenger_zone = zone.name if zone else None
+    trip_direction = "from_aub" if is_at_aub else "to_aub"
+    destination_lat: Optional[float] = None
+    destination_long: Optional[float] = None
+    if not is_at_aub:
+        try:
+            aub_lat, aub_lng, _ = _get_aub_coordinates()
+            destination_lat = aub_lat
+            destination_long = aub_lng
+        except Exception as exc:
+            logger.error("Unable to resolve AUB destination coordinates: %s", exc)
 
     min_avg_input = (
         payload["min_avg_rating"]
@@ -747,6 +809,10 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
             passenger_zone=passenger_zone,
             min_avg=min_avg_rating,
             requested_at=pickup_dt,
+            destination_lat=destination_lat,
+            destination_long=destination_long,
+            trip_direction=trip_direction,
+            arrival_reference=pickup_dt,
         )
         if drivers_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
             err = (
@@ -775,6 +841,10 @@ def automated_request(payload: Dict[str, Any]) -> ServerResponse:
                 passenger_zone=passenger_zone,
                 min_avg=min_avg_rating,
                 requested_at=None,
+                destination_lat=destination_lat,
+                destination_long=destination_long,
+                trip_direction=trip_direction,
+                arrival_reference=pickup_dt,
             )
             if fallback_response.status not in {db_msg_status.OK, db_msg_status.NOT_FOUND}:
                 err = (
