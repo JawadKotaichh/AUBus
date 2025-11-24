@@ -114,9 +114,7 @@ class ProfilePage(QWidget):
         self.role_combo.addItems(["passenger", "driver"])
         self.role_combo.currentTextChanged.connect(self._handle_role_changed)
         self.theme_combo = QComboBox()
-        self.theme_combo.addItems(
-            ["bolt_light", "bolt_dark", "light", "dark", "sunset", "midnight"]
-        )
+        self.theme_combo.addItems(["light"])
         self.notifications_combo = QComboBox()
         self.notifications_combo.addItems(["enabled", "disabled"])
         self.area_lookup_status = QLabel()
@@ -208,7 +206,7 @@ class ProfilePage(QWidget):
             widget.clear()
         self.role_combo.setCurrentIndex(0)
         set_gender_combo_value(self.gender_combo, DEFAULT_GENDER)
-        self.theme_combo.setCurrentText("bolt_light")
+        self.theme_combo.setCurrentText("light")
         self.notifications_combo.setCurrentIndex(0)
         self.area_lookup_status.clear()
         self.status_label.clear()
@@ -235,7 +233,7 @@ class ProfilePage(QWidget):
             self._selected_area_coords = None
         self._update_area_lookup_status()
         self.role_combo.setCurrentText(self.user.get("role", "passenger"))
-        self.theme_combo.setCurrentText(self.user.get("theme", "bolt_light"))
+        self.theme_combo.setCurrentText(self.user.get("theme", "light"))
         self.notifications_combo.setCurrentText(
             "enabled" if self.user.get("notifications", True) else "disabled"
         )

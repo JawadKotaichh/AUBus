@@ -46,7 +46,7 @@ _ACTION_TO_REQUEST_TYPE = {
     "set_driver_location": 27,
 }
 _SERVER_STATUS_OK = 1
-_DEFAULT_THEME = "bolt_light"
+_DEFAULT_THEME = "light"
 _DEFAULT_GENDER = "female"
 _SENSITIVE_KEYS = {"password", "session_token"}
 _ALLOWED_GENDERS = {"female", "male"}
@@ -824,7 +824,7 @@ class MockServerAPI(ServerAPI):
             "longitude": 35.5018,
             "role": "passenger",
              "gender": _DEFAULT_GENDER,
-            "theme": "bolt_light",
+            "theme": "light",
             "notifications": True,
         }
         self._driver_location_state: Dict[str, str] = {}

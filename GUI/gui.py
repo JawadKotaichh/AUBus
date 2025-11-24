@@ -40,7 +40,7 @@ from server_api import ServerAPI, ServerAPIError
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, api: Optional[ServerAPI] = None, theme: str = "bolt_light"):
+    def __init__(self, api: Optional[ServerAPI] = None, theme: str = "light"):
         super().__init__()
         self.api = api or ServerAPI()
         self.chat_service = PeerChatNode()
@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
         self._update_driver_location_widgets()
 
     def _current_theme_colors(self) -> Dict[str, str]:
-        return THEME_PALETTES.get(self.theme, THEME_PALETTES["bolt_light"])
+        return THEME_PALETTES.get(self.theme, THEME_PALETTES["light"])
 
     def _build_driver_location_bar(self) -> QFrame:
         bar = QFrame()
@@ -593,7 +593,7 @@ class MainWindow(QMainWindow):
         self.theme = theme
         app.setStyleSheet(build_stylesheet(theme))
         self.chats_page.set_palette(
-            THEME_PALETTES.get(theme, THEME_PALETTES["bolt_light"])
+            THEME_PALETTES.get(theme, THEME_PALETTES["light"])
         )
         self._refresh_tab_icons()
 
@@ -607,7 +607,7 @@ class MainWindow(QMainWindow):
 # Entrypoint -------------------------------------------------------------------
 
 
-def run(api: Optional[ServerAPI] = None, theme: str = "bolt_light") -> None:
+def run(api: Optional[ServerAPI] = None, theme: str = "light") -> None:
     app = QApplication(sys.argv)
     app.setStyleSheet(build_stylesheet(theme))
     window = MainWindow(api=api, theme=theme)

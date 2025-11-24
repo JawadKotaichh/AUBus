@@ -37,7 +37,7 @@ class ChatsPage(QWidget):
         self.session_token: Optional[str] = None
         self.current_chat_id: Optional[str] = None
         self.current_chat: Optional[Dict[str, Any]] = None
-        self.palette = THEME_PALETTES["bolt_light"]
+        self.palette = THEME_PALETTES["light"]
         self.chat_histories: Dict[str, List[Dict[str, Any]]] = {}
         self.chat_entries: Dict[str, Dict[str, Any]] = {}
 

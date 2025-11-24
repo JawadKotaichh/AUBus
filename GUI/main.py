@@ -1,4 +1,4 @@
-"""Entry point for the AUBus PyQt client with modern themes."""
+"""Entry point for the AUBus PyQt client with the light theme."""
 
 from __future__ import annotations
 
@@ -11,14 +11,8 @@ from server_api import ServerAPI
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the AUBus desktop client with modern UI.",
+        description="Run the AUBus desktop client (light theme).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Theme Options:
-  modern_light    Clean, bright interface with blue accents (default)
-  modern_dark     Sleek dark mode with vibrant highlights
-  ocean           Professional cyan/teal theme inspired by water
-        """,
     )
     parser.add_argument(
         "--server-host",
@@ -39,9 +33,9 @@ Theme Options:
     )
     parser.add_argument(
         "--theme",
-        default="modern_light",
-        choices=["modern_light", "modern_dark", "ocean"],
-        help="Choose your preferred theme (default: modern_light).",
+        default="light",
+        choices=["light"],
+        help="UI theme (only 'light' is available).",
     )
     return parser.parse_args(argv)
 

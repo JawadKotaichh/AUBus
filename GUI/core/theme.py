@@ -3,71 +3,8 @@ from __future__ import annotations
 from typing import Dict
 
 THEME_PALETTES: Dict[str, Dict[str, str]] = {
-    # --- Modern Light (Default) ---
-    "modern_light": {
-        "text": "#2D3748",
-        "muted": "#718096",
-        "background": "#F7FAFC",
-        "card": "#FFFFFF",
-        "border": "#E2E8F0",
-        "list_bg": "#EDF2F7",
-        "accent": "#5A67D8",  # Indigo
-        "accent_alt": "#4C51BF",
-        "button_text": "#FFFFFF",
-        "input_bg": "#FFFFFF",
-        "table_header": "#F7FAFC",
-        "statusbar": "#FFFFFF",
-        "chat_background": "#F7FAFC",
-        "chat_self": "#5A67D8",
-        "chat_other": "#EEF1FF",
-        "chat_self_text": "#FFFFFF",
-        "stat_bg": "#5A67D8",
-        "stat_text": "#FFFFFF",
-    },
-    # --- Modern Dark ---
-    "modern_dark": {
-        "text": "#E2E8F0",
-        "muted": "#A0AEC0",
-        "background": "#1A202C",
-        "card": "#2D3748",
-        "border": "#4A5568",
-        "list_bg": "#2D3748",
-        "accent": "#667EEA",
-        "accent_alt": "#5A67D8",
-        "button_text": "#FFFFFF",
-        "input_bg": "#2D3748",
-        "table_header": "#2D3748",
-        "statusbar": "#1A202C",
-        "chat_background": "#1F2430",
-        "chat_self": "#667EEA",
-        "chat_other": "#252c3a",
-        "chat_self_text": "#FFFFFF",
-        "stat_bg": "#667EEA",
-        "stat_text": "#FFFFFF",
-    },
-    # --- Ocean (Teal/Cyan) ---
-    "ocean": {
-        "text": "#102A43",
-        "muted": "#627D98",
-        "background": "#F0F4F8",
-        "card": "#FFFFFF",
-        "border": "#D9E2EC",
-        "list_bg": "#F0F4F8",
-        "accent": "#4C51BF",
-        "accent_alt": "#667EEA",
-        "button_text": "#FFFFFF",
-        "input_bg": "#FFFFFF",
-        "table_header": "#F0F4F8",
-        "statusbar": "#FFFFFF",
-        "chat_background": "#D9E2EC",
-        "chat_self": "#4C51BF",
-        "chat_other": "#FFFFFF",
-        "chat_self_text": "#FFFFFF",
-        "stat_bg": "#4C51BF",
-        "stat_text": "#FFFFFF",
-    },
-    # --- Legacy/Fallback ---
-    "bolt_light": {
+    # Single light theme (renamed from bolt_light)
+    "light": {
         "text": "#111111",
         "muted": "#6B6F76",
         "background": "#FFFFFF",
@@ -91,7 +28,7 @@ THEME_PALETTES: Dict[str, Dict[str, str]] = {
 
 
 def build_stylesheet(mode: str) -> str:
-    colors = THEME_PALETTES.get(mode, THEME_PALETTES["modern_light"])
+    colors = THEME_PALETTES.get(mode, THEME_PALETTES["light"])
     return f"""
 * {{
     font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
