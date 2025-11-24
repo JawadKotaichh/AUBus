@@ -10,6 +10,7 @@ server/database while keeping the same public surface.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 import json
 import logging
 import socket
@@ -243,11 +244,23 @@ class ServerAPI:
     def fetch_latest_rides(
         self, *, limit: int = 5, session_token: Optional[str] = None
     ) -> List[Dict[str, Any]]:
+        token = (session_token or "").strip()
+        if not token:
+            if self._enable_demo_fallbacks:
+                return self._fallback_latest_rides(limit)
+            raise ServerAPIError("session_token is required to load recent rides.")
+
         try:
-            payload: Dict[str, Any] = {"limit": limit}
-            if session_token:
-                payload["session_token"] = session_token
-            return self._send_request("latest_rides", payload)
+            trips = self.fetch_trips(session_token=token, filters={"limit": limit})
+            rides: List[Dict[str, Any]] = []
+            for group, role in (("as_rider", "rider"), ("as_driver", "driver")):
+                for trip in trips.get(group, []) or []:
+                    rides.append(self._normalize_trip_entry(trip, role=role))
+            rides.sort(key=lambda ride: ride.get("_sort_ts", 0), reverse=True)
+            top = rides[: max(1, limit)]
+            for ride in top:
+                ride.pop("_sort_ts", None)
+            return top
         except ServerAPIError as exc:
             if self._enable_demo_fallbacks:
                 logger.warning(
@@ -632,6 +645,56 @@ class ServerAPI:
             },
         ]
         return sample_rides[: max(1, limit)]
+
+    @staticmethod
+    def _normalize_trip_entry(trip: Dict[str, Any], *, role: str) -> Dict[str, Any]:
+        """
+        Convert a trip row (from LIST_TRIPS) into the generic ride format the dashboard expects.
+        """
+        requested_time = trip.get("requested_time") or trip.get("time")
+        ride_id = trip.get("ride_id") or trip.get("id")
+        partner_name = trip.get("partner_name")
+        driver_name = trip.get("driver_name") or (partner_name if role == "rider" else None)
+        rider_name = trip.get("rider_name") or (partner_name if role == "driver" else None)
+        normalized = {
+            "id": ride_id,
+            "ride_id": ride_id,
+            "from": trip.get("pickup_area") or trip.get("from") or trip.get("origin"),
+            "pickup_area": trip.get("pickup_area"),
+            "to": trip.get("destination") or trip.get("to"),
+            "destination": trip.get("destination"),
+            "requested_time": requested_time,
+            "time": requested_time,
+            "status": trip.get("status"),
+            "role": role,
+            "driver_name": driver_name,
+            "rider_name": rider_name,
+        }
+        normalized["_sort_ts"] = ServerAPI._parse_trip_timestamp(requested_time)
+        return normalized
+
+    @staticmethod
+    def _parse_trip_timestamp(value: Any) -> float:
+        if isinstance(value, (int, float)):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+        if not value:
+            return 0.0
+        text = str(value).strip()
+        if not text:
+            return 0.0
+        cleaned = text.replace("T", " ").replace("Z", "")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(cleaned, fmt).timestamp()
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(cleaned).timestamp()
+        except ValueError:
+            return 0.0
 
 
 # Mock implementation -----------------------------------------------------------

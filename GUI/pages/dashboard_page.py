@@ -336,12 +336,7 @@ class DashboardPage(QWidget):
             pending = accepted = None
         else:
             self._render_rides(rides)
-            pending = sum(
-                1 for ride in rides if str(ride.get("status", "")).lower() == "pending"
-            )
-            accepted = sum(
-                1 for ride in rides if str(ride.get("status", "")).lower() == "accepted"
-            )
+            pending, accepted = self._summarize_statuses(rides)
 
         self._update_stats(
             pending=pending,
@@ -450,3 +445,13 @@ class DashboardPage(QWidget):
             meta_parts.append(f"ID: {ride_id}")
         meta = " | ".join(meta_parts)
         return f"{origin} -> {destination}\n{meta}"
+
+    def _summarize_statuses(self, rides: List[Dict[str, Any]]) -> tuple[int, int]:
+        pending = accepted = 0
+        for ride in rides:
+            status = str(ride.get("status") or "").strip().lower()
+            if status == "pending":
+                pending += 1
+            elif status in {"accepted", "awaiting_rating", "complete"}:
+                accepted += 1
+        return pending, accepted
