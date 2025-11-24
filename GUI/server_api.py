@@ -240,9 +240,14 @@ class ServerAPI:
                 )
             raise ServerAPIError(str(exc)) from exc
 
-    def fetch_latest_rides(self, *, limit: int = 5) -> List[Dict[str, Any]]:
+    def fetch_latest_rides(
+        self, *, limit: int = 5, session_token: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         try:
-            return self._send_request("latest_rides", {"limit": limit})
+            payload: Dict[str, Any] = {"limit": limit}
+            if session_token:
+                payload["session_token"] = session_token
+            return self._send_request("latest_rides", payload)
         except ServerAPIError as exc:
             if self._enable_demo_fallbacks:
                 logger.warning(
