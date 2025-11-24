@@ -358,6 +358,9 @@ class MainWindow(QMainWindow):
     def _on_authenticated(self, user: Dict[str, Any]) -> None:
         hydrated = self._hydrate_user_from_server(user)
         self.user = hydrated
+        self.chat_service.set_user_namespace(
+            user_id=hydrated.get("user_id"), username=hydrated.get("username")
+        )
         self._driver_location_choice = (
             str(hydrated.get("driver_location_state")).strip().lower()
             if hydrated.get("driver_location_state")
@@ -575,6 +578,7 @@ class MainWindow(QMainWindow):
         self.dashboard_page.set_session_token(None)
         self.dashboard_page.clear_user_context()
         self.chat_service.clear()
+        self.chat_service.set_user_namespace(user_id=None, username=None)
         self.profile_page.load_user({})
         self.request_page.clear_user_context()
         self.search_page.clear_user_context()

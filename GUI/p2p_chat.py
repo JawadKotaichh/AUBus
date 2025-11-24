@@ -54,14 +54,39 @@ class PeerChatNode(QObject):
         self._server_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._peers: Dict[str, PeerEndpoint] = {}
-        self._storage_dir = Path(storage_dir or (Path.cwd() / "chat_media"))
-        self._storage_dir.mkdir(parents=True, exist_ok=True)
+        self._storage_root = Path(storage_dir or (Path.cwd() / "chat_media"))
+        self._storage_root.mkdir(parents=True, exist_ok=True)
+        self._storage_dir = self._storage_root
         self._connect_timeout = connect_timeout
         self._listening_port: int = 0
 
     @property
     def port(self) -> int:
         return self._listening_port
+
+    def set_user_namespace(
+        self, *, user_id: Optional[int] = None, username: Optional[str] = None
+    ) -> None:
+        """
+        Isolate chat history/attachments per local user so accounts do not
+        leak conversations into each other when sharing the same device.
+        """
+        namespace: Optional[str] = None
+        if user_id is not None:
+            try:
+                namespace = f"user-{int(user_id)}"
+            except (TypeError, ValueError):
+                namespace = None
+        if namespace is None and username:
+            safe = "".join(
+                c for c in str(username).lower() if c.isalnum() or c in {"-", "_"}
+            )
+            if safe:
+                namespace = f"user-{safe}"
+        target_dir = self._storage_root / namespace if namespace else self._storage_root
+        target_dir.mkdir(parents=True, exist_ok=True)
+        self._storage_dir = target_dir
+        self._peers.clear()
 
     def start(self) -> None:
         if self._server_thread and self._server_thread.is_alive():
