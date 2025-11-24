@@ -40,25 +40,11 @@ ALLOWED_GENDERS: Tuple[str, ...] = (
 )
 _DEFAULT_GENDER_VALUE = "female"
 _GENDER_SYNONYMS = {
-    "f": "female",
     "woman": "female",
     "female": "female",
-    "lady": "female",
-    "girl": "female",
-    "m": "male",
     "man": "male",
     "male": "male",
-    "boy": "male",
-    "nonbinary": _DEFAULT_GENDER_VALUE,
-    "non-binary": _DEFAULT_GENDER_VALUE,
-    "other": _DEFAULT_GENDER_VALUE,
-    "na": _DEFAULT_GENDER_VALUE,
-    "n/a": _DEFAULT_GENDER_VALUE,
-    "prefer_not_to_say": _DEFAULT_GENDER_VALUE,
-    "prefer not to say": _DEFAULT_GENDER_VALUE,
-    "prefer_not_say": _DEFAULT_GENDER_VALUE,
-    "prefer not say": _DEFAULT_GENDER_VALUE,
-    "": _DEFAULT_GENDER_VALUE,
+
 }
 _GENDER_ENUM_SQL = ", ".join(f"'{value}'" for value in ALLOWED_GENDERS)
 _REQUIRED_SCHEMA_TABLES: Tuple[str, ...] = (
