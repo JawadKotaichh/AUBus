@@ -471,7 +471,7 @@ class ChatsPage(QWidget):
             self._render_messages(self.chat_histories.get(self.current_chat_id, []))
 
     def _apply_styles(self) -> None:
-        # Modern Indigo/Blue Gradient
+
         gradient = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C51BF, stop:1 #667EEA)"
 
         self.setStyleSheet(

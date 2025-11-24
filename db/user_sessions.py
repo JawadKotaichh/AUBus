@@ -382,7 +382,7 @@ def get_online_users():
     cur.execute("""SELECT user_id FROM user_sessions""")
     return [
         row[0] for row in cur.fetchall()
-    ]  # THIS WILL RETURN A LIST OF IDS FOR ALL ONLINE USER, WE CAN USE IN ALL FILTERING QUERIES
+    ]  
 
 
 def set_driver_location(user_id: int, location: Any) -> DBResponse:
