@@ -185,6 +185,10 @@ class RequestRidePage(QWidget):
 
         self.driver_box = QFrame()
         self.driver_box.setObjectName("sectionCard")
+        self.driver_box.setSizePolicy(
+            QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        )
+        self.driver_box.setMinimumHeight(260)
         driver_layout = QVBoxLayout(self.driver_box)
         driver_layout.setContentsMargins(14, 12, 14, 12)
         driver_layout.setSpacing(8)
@@ -259,6 +263,9 @@ class RequestRidePage(QWidget):
         self.user_role = "driver" if is_driver else "passenger"
         self.auto_box.setVisible(not is_driver)
         self.driver_box.setVisible(is_driver)
+        if is_driver:
+            # Make sure the driver dashboard lays out immediately after toggling visibility.
+            self.driver_box.updateGeometry()
         self.rate_driver_btn.setVisible(False)
         if not self.session_token:
             self._update_auto_status(
