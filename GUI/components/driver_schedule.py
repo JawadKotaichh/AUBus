@@ -60,8 +60,8 @@ class DriverScheduleEditor(QGroupBox):
                     background-color: #FFFFFF;
                 }
                 QCheckBox::indicator:checked {
-                    background-color: #34BB78;
-                    border: 1px solid #169A63;
+                    background-color: #4C51BF;
+                    border: 1px solid #3B4ABA;
                 }
                 """
             )

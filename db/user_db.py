@@ -66,6 +66,7 @@ _REQUIRED_SCHEMA_TABLES: Tuple[str, ...] = (
     "schedule",
     "rides",
     "user_sessions",
+    "driver_locations",
     "ride_requests",
     "ride_request_candidates",
 )
@@ -366,6 +367,8 @@ def _ensure_gender_column(cursor: sqlite3.Cursor) -> None:
 def _apply_schema_upgrades(cursor: sqlite3.Cursor) -> None:
     _ensure_gender_column(cursor)
     _sanitize_gender_values(cursor)
+    # Ensure session-related tables (including driver_locations) exist for legacy DBs.
+    init_user_sessions_schema()
 
 
 def _sanitize_gender_values(cursor: sqlite3.Cursor) -> None:
@@ -1428,7 +1431,7 @@ def fetch_online_drivers(
 
     # fallback if schedule/time filtering removed everyone
     if not drivers and enforce_schedule_window:
-        logger.warning("[fetch_online_drivers] No drivers matched time window — retrying without schedule filter.")
+        logger.warning("[fetch_online_drivers] No drivers matched time window; retrying without schedule filter.")
         return fetch_online_drivers(
             min_avg_rating=min_avg_rating,
             zone=zone,

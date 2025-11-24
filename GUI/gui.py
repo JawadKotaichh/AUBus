@@ -26,17 +26,15 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from core import THEME_PALETTES, build_stylesheet, logger
-from pages import (
-    AuthPage,
-    ChatsPage,
-    DashboardPage,
-    ProfilePage,
-    RequestRidePage,
-    SearchDriverPage,
-    TripsPage,
-)
+from core.theme import THEME_PALETTES, build_stylesheet
+from core.logger import logger
+from pages.auth_page import AuthPage
+from pages.chats_page import ChatsPage
+from pages.dashboard_page import DashboardPage
+from pages.profile_page import ProfilePage
+from pages.request_ride_page import RequestRidePage
+from pages.search_driver_page import SearchDriverPage
+from pages.trips_page import TripsPage
 from p2p_chat import PeerChatNode
 from server_api import ServerAPI, ServerAPIError
 
@@ -140,18 +138,28 @@ class MainWindow(QMainWindow):
         bar = QFrame()
         bar.setObjectName("driverLocationBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(14, 8, 14, 8)
-        layout.setSpacing(8)
-        self._driver_location_label = QLabel("Driver location: not set")
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(10)
+        bar.setStyleSheet(
+            """
+            #driverLocationBar {
+                background: transparent;
+            }
+            #driverLocationButton {
+                padding: 8px 14px;
+            }
+            """
+        )
         self._driver_location_btn = QPushButton("Update driver location")
         self._driver_location_btn.setObjectName("driverLocationButton")
         self._driver_location_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._driver_location_btn.clicked.connect(
             lambda: self._open_driver_location_dialog(force=True)
         )
-        layout.addWidget(self._driver_location_label, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addStretch(1)
+        self._driver_location_label = QLabel("Location: not set")
         layout.addWidget(self._driver_location_btn, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(self._driver_location_label, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addStretch(1)
         bar.setVisible(False)
         return bar
 
@@ -167,7 +175,7 @@ class MainWindow(QMainWindow):
             active_primary = QColor("#FFFFFF")
         active_secondary = QColor(active_primary)
         active_highlight = QColor(
-            colors.get("accent_alt", colors.get("accent", "#34BB78"))
+            colors.get("accent_alt", colors.get("accent", "#4C51BF"))
         )
 
         self._tab_icon_palettes = {
@@ -422,14 +430,14 @@ class MainWindow(QMainWindow):
         self.driver_location_bar.setVisible(is_driver)
         if not is_driver:
             return
-        label_text = (
-            "Driver location: AUB"
+        location_display = (
+            "AUB"
             if self._driver_location_choice == "aub"
-            else "Driver location: home"
+            else "Home"
             if self._driver_location_choice == "home"
-            else "Driver location: not set"
+            else "Not set"
         )
-        self._driver_location_label.setText(label_text)
+        self._driver_location_label.setText(f"Location: {location_display}")
 
     def _prompt_driver_location_if_needed(self) -> None:
         if not self._user_is_driver(self.user):
@@ -470,7 +478,7 @@ class MainWindow(QMainWindow):
                 }
                 QPushButton {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #6C5CE7, stop:1 #FF6FB1);
+                        stop:0 #4C51BF, stop:1 #667EEA);
                     color: #FFFFFF;
                     border: none;
                     border-radius: 10px;
@@ -479,11 +487,11 @@ class MainWindow(QMainWindow):
                 }
                 QPushButton:hover {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #7A6DF0, stop:1 #FF80BC);
+                        stop:0 #5A67D8, stop:1 #7387F0);
                 }
                 QPushButton:pressed {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                        stop:0 #5A4ED5, stop:1 #E260A3);
+                        stop:0 #3B4ABA, stop:1 #4B55C2);
                 }
                 """
             )

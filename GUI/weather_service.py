@@ -48,8 +48,9 @@ class WeatherService:
         self.base_url = chosen_base_url.strip() or _DEFAULT_BASE_URL
         self.timeout = timeout
         if fallback_enabled is None:
-            fallback_flag = (os.getenv("WEATHER_ALLOW_FALLBACK") or "").strip().lower()
-            fallback_enabled = fallback_flag not in {"0", "false", "no"}
+            # Force fallback to be enabled by default to prevent "API key not configured" errors
+            # when running without a key.
+            fallback_enabled = True
         self._fallback_enabled = bool(fallback_enabled)
         provider_pref_raw = os.getenv("WEATHER_PROVIDER") or ""
         preferred = provider_pref_raw.strip().lower()

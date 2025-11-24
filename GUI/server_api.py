@@ -767,6 +767,7 @@ class MockServerAPI(ServerAPI):
         self._driver_location_state: Dict[str, str] = {}
         self._logged_in: bool = False  # 🔒 gate everything until login
         self._request_counter: int = 0
+        self._chat_endpoints: Dict[int, Dict[str, Any]] = {}
 
     # --- auth helpers -----------------------------------------------------------
     def _require_login(self) -> None:
@@ -880,7 +881,7 @@ class MockServerAPI(ServerAPI):
         rider_location = payload.get("rider_location")
         at_aub = bool(rider_location) if isinstance(rider_location, bool) else str(
             rider_location
-        ).lower() in {"1", "true", "aub", "campus", "to_aub"}
+        ).lower() in {"1", "true", "aub", "campus", "from_aub", "at_aub"}
         requested_time = payload.get("pickup_time") or _ts_offset(30)
         self._request_counter += 1
         request_id = f"auto-{self._request_counter:04d}"
@@ -1185,7 +1186,6 @@ class MockServerAPI(ServerAPI):
             if user_id == ride.get("rider_id")
             else ride.get("rider_id")
         )
-        self._chat_endpoints: Dict[int, Dict[str, Any]] = {}
         if peer_id not in self._chat_endpoints:
             raise ServerAPIError("Peer is offline, please try again later")
         peer_endpoint = self._chat_endpoints[peer_id]

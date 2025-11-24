@@ -500,9 +500,9 @@ def _coerce_rider_location_flag(
         return bool(int(location_value)), None
     if isinstance(location_value, str):
         normalized = location_value.strip().lower()
-        if normalized in {"1", "true", "aub", "to_aub", "campus"}:
+        if normalized in {"1", "true", "aub", "campus", "from_aub", "at_aub"}:
             return True, None
-        if normalized in {"0", "false", "home", "from_aub"}:
+        if normalized in {"0", "false", "home", "to_aub", "away", "from_home"}:
             return False, None
     return None, "rider_location must be boolean-like (1/AUB or 0/home)."
 

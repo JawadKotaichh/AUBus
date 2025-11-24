@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 import select
 import socket
 import threading
@@ -83,9 +84,9 @@ class PeerChatNode(QObject):
                 self._server_socket.close()
             except OSError:
                 pass
-            self._server_socket = None
         if self._server_thread and self._server_thread.is_alive():
             self._server_thread.join(timeout=1.0)
+        self._server_socket = None
 
     def clear(self) -> None:
         """Forget all peer registrations (used on logout)."""
@@ -109,6 +110,34 @@ class PeerChatNode(QObject):
     def is_ready(self, chat_id: str) -> bool:
         return chat_id in self._peers
 
+    def load_history(self, chat_id: str) -> list[Dict[str, Any]]:
+        """Load past messages from disk."""
+        history_file = self._history_file(chat_id)
+        if not history_file.exists():
+            return []
+        messages = []
+        try:
+            for line in history_file.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    messages.append(json.loads(line))
+        except Exception:
+            pass  # Ignore corrupted history
+        return messages
+
+    def _history_file(self, chat_id: str) -> Path:
+        chat_dir = self._storage_dir / chat_id
+        chat_dir.mkdir(parents=True, exist_ok=True)
+        return chat_dir / "messages.jsonl"
+
+    def _append_to_history(self, chat_id: str, message: Dict[str, Any]) -> None:
+        try:
+            line = json.dumps(message) + "\n"
+            with self._history_file(chat_id).open("a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass  # Don't crash on logging failure
+
+
     def send_text(self, chat_id: str, sender: str, body: str) -> Dict[str, Any]:
         if not body.strip():
             raise PeerChatError("Message body cannot be empty.")
@@ -116,7 +145,9 @@ class PeerChatNode(QObject):
             chat_id=chat_id, sender=sender, media_type="text", body=body.strip()
         )
         self._transmit(packet)
-        return self._make_message(packet, direction="outgoing")
+        message = self._make_message(packet, direction="outgoing")
+        self._append_to_history(chat_id, message)
+        return message
 
     def send_photo(self, chat_id: str, sender: str, file_path: str) -> Dict[str, Any]:
         return self._send_attachment(
@@ -134,9 +165,14 @@ class PeerChatNode(QObject):
     def _serve(self) -> None:
         assert self._server_socket is not None
         while not self._stop_event.is_set():
-            readable, _, _ = select.select(
-                [self._server_socket], [], [], 0.4
-            )
+            if self._server_socket is None:
+                break
+            try:
+                readable, _, _ = select.select(
+                    [self._server_socket], [], [], 0.4
+                )
+            except OSError:
+                break
             if not readable:
                 continue
             try:
@@ -168,6 +204,7 @@ class PeerChatNode(QObject):
                         if not chat_id:
                             raise ValueError("chat_id missing in packet")
                         message = self._make_message(packet, direction="incoming")
+                        self._append_to_history(chat_id, message)
                         self.message_received.emit(chat_id, message)
                     except Exception as exc:  # noqa: BLE001
                         chat_id_hint = packet.get("chat_id") if "packet" in locals() else ""
@@ -188,18 +225,22 @@ class PeerChatNode(QObject):
         if not path.exists():
             raise PeerChatError(f"File not found: {file_path}")
         data = base64.b64encode(path.read_bytes()).decode("ascii")
+        filename = path.name
+        if media_type == "voice":
+            filename = self._random_filename("voice", path.suffix or ".m4a")
         packet = self._build_packet(
             chat_id=chat_id,
             sender=sender,
             media_type=media_type,
-            body=f"{media_type.title()} shared: {path.name}",
-            filename=path.name,
+            body=f"{media_type.title()} shared: {filename}",
+            filename=filename,
             data=data,
         )
-        stored_path = self._store_attachment(chat_id, path.name, path.read_bytes())
+        stored_path = self._store_attachment(chat_id, filename, path.read_bytes())
         self._transmit(packet)
         message = self._make_message(packet, direction="outgoing")
         message["attachment_path"] = str(stored_path)
+        self._append_to_history(chat_id, message)
         return message
 
     def _build_packet(
@@ -263,8 +304,24 @@ class PeerChatNode(QObject):
         chat_dir = self._storage_dir / chat_id
         chat_dir.mkdir(parents=True, exist_ok=True)
         target = chat_dir / sanitized
+        # Avoid clobbering an existing attachment if the sender reused a filename.
+        if target.exists():
+            base = target.stem
+            suffix = target.suffix
+            counter = 1
+            while target.exists():
+                target = chat_dir / f"{base}-{counter}{suffix}"
+                counter += 1
         target.write_bytes(data)
         return target
+
+    def _random_filename(self, prefix: str, suffix: str) -> str:
+        clean_prefix = "".join(c for c in prefix if c.isalnum() or c in {"-", "_"})
+        if not clean_prefix:
+            clean_prefix = "voice"
+        clean_suffix = suffix if suffix.startswith(".") else f".{suffix.lstrip('.')}"
+        token = secrets.token_hex(4)
+        return f"{clean_prefix}-{token}{clean_suffix}"
 
     def _transmit(self, packet: Dict[str, Any]) -> None:
         chat_id = packet.get("chat_id")

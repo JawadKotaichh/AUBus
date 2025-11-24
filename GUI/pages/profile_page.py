@@ -18,14 +18,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from components import DriverScheduleEditor, SuggestionPopup
-from core import (
-    ALLOWED_ZONES,
-    DEFAULT_GENDER,
-    GENDER_CHOICES,
+from components.driver_schedule import DriverScheduleEditor
+from components.suggestion_popup import SuggestionPopup
+from core.constants import ALLOWED_ZONES, DEFAULT_GENDER, GENDER_CHOICES
+from core.logger import logger
+from core.utils import (
     aub_email_requirement,
     is_valid_aub_email,
-    logger,
     normalize_gender_choice,
     place_text_for_input,
     set_gender_combo_value,
@@ -265,7 +264,7 @@ class ProfilePage(QWidget):
                 f"Lat {self._selected_area_coords['latitude']:.5f}, "
                 f"Lng {self._selected_area_coords['longitude']:.5f}"
             )
-            self.area_lookup_status.setStyleSheet("color: green;")
+            self.area_lookup_status.setStyleSheet("color: #1D4ED8;")
         else:
             self.area_lookup_status.clear()
 
@@ -292,7 +291,7 @@ class ProfilePage(QWidget):
             self.area_lookup_status.setText(
                 f"Select a location from {len(results)} match(es)."
             )
-            self.area_lookup_status.setStyleSheet("color: green;")
+            self.area_lookup_status.setStyleSheet("color: #1D4ED8;")
         elif triggered_by_user:
             self._profile_popup.hide()
             self.area_lookup_status.setText("No matching locations found.")
@@ -360,7 +359,7 @@ class ProfilePage(QWidget):
             self.area_lookup_status.setText(
                 f"Using current location: {label} (Lat {result.latitude:.5f}, Lng {result.longitude:.5f}){accuracy_hint}"
             )
-            self.area_lookup_status.setStyleSheet("color: green;")
+            self.area_lookup_status.setStyleSheet("color: #1D4ED8;")
         finally:
             self.area_location_btn.setEnabled(True)
 
@@ -395,7 +394,7 @@ class ProfilePage(QWidget):
         self.load_user(merged)
         if not quiet:
             self.status_label.setText("Profile synced from server")
-            self.status_label.setStyleSheet("color: green;")
+            self.status_label.setStyleSheet("color: #1D4ED8;")
         self.profile_updated.emit(merged)
 
     def _save(self) -> None:
@@ -474,78 +473,75 @@ class ProfilePage(QWidget):
             "notifications": self.notifications_combo.currentText() == "enabled",
         }
         self.load_user(merged_user)
-        self._flash_status(self.status_label, "Profile updated", "green")
+        self._flash_status(self.status_label, "Profile updated", "#1D4ED8")
         self.theme_changed.emit(self.theme_combo.currentText())
         self.profile_updated.emit(merged_user)
         self.refresh_from_server(merged_user, quiet=True)
 
     def _apply_styles(self) -> None:
+        indigo_gradient = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C51BF, stop:1 #667EEA)"
         self.setStyleSheet(
-            """
-            #profileHero {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0E1133, stop:0.35 #1E2D74, stop:0.7 #0FA6A2, stop:1 #E65C80);
+            f"""
+            #profileHero {{
+                background: {indigo_gradient};
                 border-radius: 20px;
                 border: 1px solid rgba(255,255,255,0.14);
-            }
-            #profileHero QLabel { color: #F7FAFF; background: transparent; }
-            #heroTitle {
+            }}
+            #profileHero QLabel {{ color: #F7FAFF; background: transparent; }}
+            #heroTitle {{
                 font-size: 20px;
                 font-weight: 900;
                 letter-spacing: 0.3px;
                 color: #FFFFFF;
-            }
-            #heroSubtitle {
+            }}
+            #heroSubtitle {{
                 color: #E6EAF9;
                 font-size: 12.5px;
-            }
-            #sectionCard {
+            }}
+            #sectionCard {{
                 background: #FFFFFF;
                 border: 1px solid #E5E9F3;
                 border-radius: 14px;
-            }
-            #sectionTitle {
+            }}
+            #sectionTitle {{
                 font-size: 12px;
                 font-weight: 800;
                 letter-spacing: 0.5px;
                 color: #1F2A44;
                 text-transform: uppercase;
-            }
-            #sectionSubtitle {
+            }}
+            #sectionSubtitle {{
                 color: #5D687B;
                 font-size: 11.5px;
-            }
-            QPushButton#actionPrimary {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
+            }}
+            QPushButton#actionPrimary {{
+                background: {indigo_gradient};
                 color: #FFFFFF;
                 border: none;
                 border-radius: 12px;
                 padding: 10px 14px;
                 font-weight: 800;
-            }
-            QPushButton#actionPrimary:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            QPushButton#actionPrimary:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            QPushButton#actionGhost {
+            }}
+            QPushButton#actionPrimary:hover {{
+                background: #5A67D8;
+            }}
+            QPushButton#actionPrimary:pressed {{
+                background: #434190;
+            }}
+            QPushButton#actionGhost {{
                 background: transparent;
-                border: 2px solid #6C5CE7;
-                color: #2B2F52;
+                border: 2px solid #4C51BF;
+                color: #1D2671;
                 border-radius: 12px;
                 padding: 9px 14px;
                 font-weight: 800;
-            }
-            QPushButton#actionGhost:hover {
-                background: rgba(108,92,231,0.08);
-            }
-            QPushButton#actionGhost:pressed {
-                background: rgba(108,92,231,0.14);
-            }
+            }}
+            QPushButton#actionGhost:hover {{
+                background: #EBF0FF;
+            }}
+            QPushButton#actionGhost:pressed {{
+                background: #E0E7FF;
+            }}
             """
         )
 

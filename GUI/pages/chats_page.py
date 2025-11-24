@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaRecorder
+from PyQt6.QtCore import QTimer, Qt, QUrl
+from PyQt6.QtMultimedia import (
+    QAudioInput,
+    QMediaCaptureSession,
+    QMediaFormat,
+    QMediaRecorder,
+)
 from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -17,8 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from components import MessageBubble
-from core import THEME_PALETTES
+from components.message_bubble import MessageBubble
+from core.theme import THEME_PALETTES
 from p2p_chat import PeerChatError, PeerChatNode
 from server_api import ServerAPI, ServerAPIError
 
@@ -150,9 +155,14 @@ class ChatsPage(QWidget):
         self._media_recorder = QMediaRecorder()
         self._audio_session.setAudioInput(self._audio_input)
         self._audio_session.setRecorder(self._media_recorder)
+        audio_format = QMediaFormat()
+        audio_format.setFileFormat(QMediaFormat.FileFormat.Mpeg4Audio)
+        audio_format.setAudioCodec(QMediaFormat.AudioCodec.AAC)
+        self._media_recorder.setMediaFormat(audio_format)
         self._media_recorder.recorderStateChanged.connect(
             self._on_recorder_state_changed
         )
+        self._media_recorder.errorOccurred.connect(self._on_recording_error)
         self._recording_path: Optional[str] = None
 
         self._apply_styles()
@@ -234,6 +244,13 @@ class ChatsPage(QWidget):
         chat: Dict[str, Any] = current.data(Qt.ItemDataRole.UserRole)
         self.current_chat_id = chat["chat_id"]
         self.current_chat = chat
+        
+        # Load history if not already in memory
+        if self.current_chat_id not in self.chat_histories:
+            self.chat_histories[self.current_chat_id] = self.chat_service.load_history(
+                self.current_chat_id
+            )
+
         peer_name = chat.get("peer", {}).get("name") or "Peer"
         self.chat_title.setText(peer_name)
         self.chat_status.setText(chat.get("status", "offline"))
@@ -319,7 +336,7 @@ class ChatsPage(QWidget):
         ):
             self._media_recorder.stop()
         else:
-            if not self.current_chat_id:
+            if not self.current_chat_id or not (self.current_chat or {}).get("ready"):
                 return
             # Create a temp file path
             import tempfile
@@ -365,6 +382,18 @@ class ChatsPage(QWidget):
                     pass
                 self._recording_path = None
 
+    def _on_recording_error(
+        self, error: QMediaRecorder.Error, detail: str
+    ) -> None:
+        if error != QMediaRecorder.Error.NoError:
+            self.chat_status.setText(f"Voice recording failed: {detail}")
+            self.voice_btn.setText("Voice")
+            self.voice_btn.setStyleSheet("")
+            self.message_input.setEnabled(True)
+            self.send_btn.setEnabled(True)
+            self.photo_btn.setEnabled(True)
+            self._recording_path = None
+
     def _send_file_message(
         self,
         *,
@@ -391,11 +420,14 @@ class ChatsPage(QWidget):
         return self.user.get("name") or self.user.get("username") or "me"
 
     def _handle_incoming_message(self, chat_id: str, message: Dict[str, Any]) -> None:
-        self.chat_histories.setdefault(chat_id, []).append(message)
-        if self.current_chat_id == chat_id:
-            self._render_messages(self.chat_histories[chat_id])
-            self.chat_status.setText("Connected")
-            self.hero_status.setText("Status: Connected.")
+        # Only append if we've already loaded this chat's history.
+        # Otherwise, we'll load the full history (including this message) when the user opens the chat.
+        if chat_id in self.chat_histories:
+            self.chat_histories[chat_id].append(message)
+            if self.current_chat_id == chat_id:
+                self._render_messages(self.chat_histories[chat_id])
+                self.chat_status.setText("Connected")
+                self.hero_status.setText("Status: Connected.")
 
     def _handle_chat_ready(self, chat_id: str) -> None:
         if self.current_chat_id == chat_id:
@@ -416,8 +448,18 @@ class ChatsPage(QWidget):
         for message in messages:
             is_self = message.get("direction") == "outgoing"
             item = QListWidgetItem()
-            widget = MessageBubble(message, self.palette, is_self=is_self)
-            item.setSizeHint(widget.sizeHint())
+            # Constrain bubble width so labels can wrap text and compute correct height.
+            viewport_width = max(self.messages_view.viewport().width(), 320)
+            bubble_width = min(max(viewport_width - 32, 260), 520)
+            widget = MessageBubble(
+                message, self.palette, is_self=is_self, max_width=bubble_width - 40
+            )
+            widget.setFixedWidth(bubble_width)
+            widget.adjustSize()
+            size = widget.sizeHint()
+            # Add vertical breathing room so bubbles are not clipped by the list view.
+            size.setHeight(size.height() + 12)
+            item.setSizeHint(size)
             self.messages_view.addItem(item)
             self.messages_view.setItemWidget(item, widget)
         if self.messages_view.count():
@@ -429,135 +471,116 @@ class ChatsPage(QWidget):
             self._render_messages(self.chat_histories.get(self.current_chat_id, []))
 
     def _apply_styles(self) -> None:
+        # Modern Indigo/Blue Gradient
+        gradient = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C51BF, stop:1 #667EEA)"
+
         self.setStyleSheet(
-            """
-            #chatHero {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0E1133, stop:0.35 #1E2D74, stop:0.7 #0FA6A2, stop:1 #E65C80);
+            f"""
+            #chatsHero {{
+                background: {gradient};
                 border-radius: 20px;
-                border: 1px solid rgba(255,255,255,0.14);
-            }
-            #chatHero QLabel { color: #F7FAFF; background: transparent; }
-            #heroTitle {
-                font-size: 20px;
+                border: 1px solid rgba(255,255,255,0.1);
+            }}
+            #chatsHero QLabel {{ color: #F7FAFF; background: transparent; }}
+            #heroTitle {{
+                font-size: 24px;
                 font-weight: 900;
                 letter-spacing: 0.3px;
                 color: #FFFFFF;
-            }
-            #heroSubtitle {
+            }}
+            #heroSubtitle {{
                 color: #E6EAF9;
-                font-size: 12.5px;
-            }
-            #heroStatus {
+                font-size: 13px;
+            }}
+            #heroStatus {{
                 color: #F3F6FF;
                 font-size: 12px;
                 font-weight: 700;
-            }
-            #heroButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
-                color: #FFFFFF;
-                border: none;
-                border-radius: 12px;
-                padding: 10px 16px;
-                font-weight: 800;
-            }
-            #heroButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            #heroButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            #sectionCard {
+                background: rgba(255,255,255,0.1);
+                padding: 4px 8px;
+                border-radius: 6px;
+            }}
+            #sectionCard {{
                 background: #FFFFFF;
-                border: 1px solid #E5E9F3;
+                border: 1px solid #E2E8F0;
                 border-radius: 14px;
-            }
-            #sectionTitle {
+            }}
+            #sectionTitle {{
                 font-size: 12px;
                 font-weight: 800;
                 letter-spacing: 0.5px;
-                color: #1F2A44;
+                color: #2D3748;
                 text-transform: uppercase;
-            }
-            #sectionSubtitle {
-                color: #5D687B;
-                font-size: 11.5px;
-            }
-            QListWidget#chatList {
-                border: 1px solid #E6E9F2;
+            }}
+            #sectionSubtitle {{
+                color: #718096;
+                font-size: 12px;
+            }}
+            QListWidget#chatList {{
+                border: 1px solid #E2E8F0;
                 border-radius: 12px;
                 padding: 6px;
-                background: #F9FBFF;
-            }
-            QListWidget#chatList::item {
+                background: #F7FAFC;
+            }}
+            QListWidget#chatList::item {{
                 padding: 10px 8px;
                 border-radius: 10px;
                 margin: 2px 0;
-            }
-            QListWidget#chatList::item:selected {
-                background: #EEF1FF;
-                color: #1F2A44;
-            }
-            QListWidget#chatMessages {
-                border: 1px solid #E6E9F2;
+            }}
+            QListWidget#chatList::item:selected {{
+                background: #EBF4FF;
+                color: #2D3748;
+            }}
+            QListWidget#chatMessages {{
+                border: 1px solid #E2E8F0;
                 border-radius: 12px;
                 padding: 8px;
-                background: #F9FBFF;
-            }
-            QPushButton#actionPrimary {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
+                background: #F7FAFC;
+            }}
+            QPushButton#actionPrimary {{
+                background: {gradient};
                 color: #FFFFFF;
                 border: none;
-                border-radius: 12px;
+                border-radius: 10px;
                 padding: 10px 14px;
                 font-weight: 800;
-            }
-            QPushButton#actionPrimary:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            QPushButton#actionPrimary:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            QPushButton#actionGhost {
+            }}
+            QPushButton#actionPrimary:hover {{
+                background-color: #5A67D8;
+            }}
+            QPushButton#actionPrimary:pressed {{
+                background-color: #434190;
+            }}
+            QPushButton#actionGhost {{
                 background: transparent;
-                border: 2px solid #6C5CE7;
-                color: #2B2F52;
-                border-radius: 12px;
+                border: 1px solid #5A67D8;
+                color: #5A67D8;
+                border-radius: 10px;
                 padding: 9px 14px;
                 font-weight: 800;
-            }
-            QPushButton#actionGhost:hover {
-                background: rgba(108,92,231,0.08);
-            }
-            QPushButton#actionGhost:pressed {
-                background: rgba(108,92,231,0.14);
-            }
-            QPushButton#chatFab, QPushButton#chatFabSend {
-                background: #25D366;
+            }}
+            QPushButton#actionGhost:hover {{
+                background: #EBF4FF;
+            }}
+            QPushButton#actionGhost:pressed {{
+                background: #E2E8F0;
+            }}
+            QPushButton#chatFab, QPushButton#chatFabSend {{
+                background: #4C51BF;
                 color: #FFFFFF;
                 border: none;
                 border-radius: 23px;
                 font-weight: 800;
                 padding: 0;
-            }
-            QPushButton#chatFabSend {
-                background: #128C7E;
-            }
-            QPushButton#chatFab:hover, QPushButton#chatFabSend:hover {
-                background: #1DA851;
-            }
-            QPushButton#chatFab:pressed, QPushButton#chatFabSend:pressed {
-                background: #0F6F5F;
-            }
+            }}
+            QPushButton#chatFabSend {{
+                background: #3B4ABA;
+            }}
+            QPushButton#chatFab:hover, QPushButton#chatFabSend:hover {{
+                background: #5A67D8;
+            }}
+            QPushButton#chatFab:pressed, QPushButton#chatFabSend:pressed {{
+                background: #2C2F81;
+            }}
             """
         )
-
-
-# Trips ------------------------------------------------------------------------
-

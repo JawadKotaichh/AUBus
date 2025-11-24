@@ -179,7 +179,7 @@ class TripsPage(QWidget):
         self._trips_cache = trips
         if trips:
             self.status_label.setText(f"{len(trips)} trip(s) loaded.")
-            self.status_label.setStyleSheet("color: #2f6b3f;")
+            self.status_label.setStyleSheet("color: #1D4ED8;")
         else:
             self.status_label.setText("No trips recorded yet.")
             self.status_label.setStyleSheet("color: #5c636a;")
@@ -293,62 +293,61 @@ class TripsPage(QWidget):
 # Profile ----------------------------------------------------------------------
 
     def _apply_styles(self) -> None:
+        # Modern Indigo/Blue Gradient
+        gradient = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C51BF, stop:1 #667EEA)"
+
         self.setStyleSheet(
-            """
-            #tripsHero {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0E1133, stop:0.35 #1E2D74, stop:0.7 #0FA6A2, stop:1 #E65C80);
+            f"""
+            #tripsHero {{
+                background: {gradient};
                 border-radius: 20px;
-                border: 1px solid rgba(255,255,255,0.14);
-            }
-            #tripsHero QLabel { color: #F7FAFF; background: transparent; }
-            #heroTitle {
-                font-size: 20px;
+                border: 1px solid rgba(255,255,255,0.1);
+            }}
+            #tripsHero QLabel {{ color: #F7FAFF; background: transparent; }}
+            #heroTitle {{
+                font-size: 24px;
                 font-weight: 900;
                 letter-spacing: 0.3px;
                 color: #FFFFFF;
-            }
-            #heroSubtitle {
+            }}
+            #heroSubtitle {{
                 color: #E6EAF9;
-                font-size: 12.5px;
-            }
-            #heroButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
-                color: #FFFFFF;
+                font-size: 13px;
+            }}
+            #heroButton {{
+                background: #FFFFFF;
+                color: #4C51BF;
                 border: none;
-                border-radius: 12px;
+                border-radius: 10px;
                 padding: 10px 16px;
                 font-weight: 800;
-            }
-            #heroButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            #heroButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            #sectionCard {
+            }}
+            #heroButton:hover {{
+                background: #F7FAFC;
+            }}
+            #heroButton:pressed {{
+                background: #EDF2F7;
+            }}
+            #sectionCard {{
                 background: #FFFFFF;
-                border: 1px solid #E5E9F3;
+                border: 1px solid #E2E8F0;
                 border-radius: 14px;
-            }
-            #sectionTitle {
+            }}
+            #sectionTitle {{
                 font-size: 12px;
                 font-weight: 800;
                 letter-spacing: 0.5px;
-                color: #1F2A44;
+                color: #2D3748;
                 text-transform: uppercase;
-            }
-            #sectionSubtitle {
-                color: #5D687B;
-                font-size: 11.5px;
-            }
-            #microHint {
-                color: #6C7284;
+            }}
+            #sectionSubtitle {{
+                color: #718096;
+                font-size: 12px;
+            }}
+            #microHint {{
+                color: #718096;
                 font-size: 11px;
-            }
+            }}
             """
         )
 

@@ -33,22 +33,22 @@ def _normalize_db_env_paths() -> None:
     Ensure DB_PATH / DB_URL environment variables point to absolute paths so that
     the same database file is reused regardless of the process working directory.
     """
-    normalized_path: Optional[Path] = None
-    raw_path = os.getenv("DB_PATH")
-    if raw_path:
-        cleaned = raw_path.strip()
-        if cleaned:
-            normalized_path = _resolve_db_path(cleaned)
-            os.environ["DB_PATH"] = str(normalized_path)
-
     raw_url = os.getenv("DB_URL")
-    if raw_url:
+    if raw_url and raw_url.strip():
         cleaned_url = raw_url.strip()
         if cleaned_url.startswith("sqlite:///"):
             path_part = cleaned_url.replace("sqlite:///", "", 1)
             if path_part:
-                path = normalized_path or _resolve_db_path(path_part)
+                path = _resolve_db_path(path_part)
                 os.environ["DB_URL"] = f"sqlite:///{path}"
+                os.environ["DB_PATH"] = str(path)
+                return
+
+    raw_path = os.getenv("DB_PATH")
+    if raw_path and raw_path.strip():
+        normalized_path = _resolve_db_path(raw_path.strip())
+        os.environ["DB_PATH"] = str(normalized_path)
+        os.environ.setdefault("DB_URL", f"sqlite:///{normalized_path}")
 
 
 _normalize_db_env_paths()

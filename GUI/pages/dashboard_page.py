@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from components import StatBadge
+from components.stat_badge import StatBadge
 from server_api import ServerAPI, ServerAPIError
 
 
@@ -176,111 +176,110 @@ class DashboardPage(QWidget):
         return block
 
     def _apply_styles(self) -> None:
+        # Modern Indigo/Blue Gradient
+        gradient = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C51BF, stop:1 #667EEA)"
+
         self.setStyleSheet(
-            """
-            #dashHero {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0E1133, stop:0.35 #1E2D74, stop:0.7 #0FA6A2, stop:1 #E65C80);
+            f"""
+            #dashHero {{
+                background: {gradient};
                 border-radius: 20px;
-                border: 1px solid rgba(255,255,255,0.12);
-            }
-            #dashHero QLabel { color: #F7FAFF; background: transparent; }
-            #dashHero QFrame { background: transparent; }
-            #heroTitle {
-                font-size: 22px;
+                border: 1px solid rgba(255,255,255,0.1);
+            }}
+            #dashHero QLabel {{ color: #F7FAFF; background: transparent; }}
+            #dashHero QFrame {{ background: transparent; }}
+            #heroTitle {{
+                font-size: 24px;
                 font-weight: 900;
                 letter-spacing: 0.3px;
                 color: #FFFFFF;
-            }
-            #heroSubtitle {
+            }}
+            #heroSubtitle {{
                 color: #E6EAF9;
-                font-size: 12.5px;
-            }
-            #refreshButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
-                color: #FFFFFF;
+                font-size: 13px;
+            }}
+            #refreshButton {{
+                background: #FFFFFF;
+                color: #4C51BF;
                 border: none;
-                border-radius: 12px;
+                border-radius: 10px;
                 padding: 10px 18px;
                 font-weight: 800;
-            }
-            #refreshButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            #refreshButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            #statBadge {
-                background: rgba(255,255,255,0.14);
-                border: 1px solid rgba(255,255,255,0.26);
+            }}
+            #refreshButton:hover {{
+                background: #F7FAFC;
+            }}
+            #refreshButton:pressed {{
+                background: #EDF2F7;
+            }}
+            #statBadge {{
+                background: rgba(255,255,255,0.1);
+                border: 1px solid rgba(255,255,255,0.2);
                 border-radius: 14px;
                 padding: 10px 8px;
                 color: #F7FAFF;
-            }
-            #insightLabel {
+            }}
+            #insightLabel {{
                 color: #F3F6FF;
                 font-size: 12px;
                 font-weight: 700;
                 letter-spacing: 0.2px;
-            }
-            #panelCard {
+            }}
+            #panelCard {{
                 background: #FFFFFF;
-                border: 1px solid #E5E9F3;
+                border: 1px solid #E2E8F0;
                 border-radius: 14px;
-            }
-            #panelTitle {
+            }}
+            #panelTitle {{
                 font-size: 13px;
                 font-weight: 800;
                 letter-spacing: 0.4px;
-                color: #1F2A44;
+                color: #2D3748;
                 text-transform: uppercase;
-            }
-            #panelSubtitle {
-                color: #657188;
-                font-size: 11.5px;
-            }
-            #ridesList {
-                border: 1px solid #E6E9F2;
+            }}
+            #panelSubtitle {{
+                color: #718096;
+                font-size: 12px;
+            }}
+            #ridesList {{
+                border: 1px solid #E2E8F0;
                 border-radius: 12px;
                 padding: 6px;
-                background: #F9FBFF;
-            }
-            #ridesList::item {
+                background: #F7FAFC;
+            }}
+            #ridesList::item {{
                 padding: 10px 8px;
                 border-radius: 10px;
                 margin: 2px 0;
-            }
-            #ridesList::item:selected {
-                background: #EEF1FF;
-                color: #1F2A44;
-            }
-            #metricBlock {
-                background: #F7F9FD;
-                border: 1px dashed #E0E6F3;
+            }}
+            #ridesList::item:selected {{
+                background: #EBF4FF;
+                color: #2D3748;
+            }}
+            #metricBlock {{
+                background: #F7FAFC;
+                border: 1px dashed #E2E8F0;
                 border-radius: 12px;
-            }
-            #metricBlock[accent=\"true\"] {
-                background: #F1ECFF;
-                border: 1px solid #DAD1FF;
-            }
-            #metricTitle {
+            }}
+            #metricBlock[accent="true"] {{
+                background: #EBF4FF;
+                border: 1px solid #C3DAFE;
+            }}
+            #metricTitle {{
                 font-size: 11px;
-                color: #6C7895;
+                color: #718096;
                 letter-spacing: 0.6px;
                 text-transform: uppercase;
-            }
-            #metricValue {
+            }}
+            #metricValue {{
                 font-size: 18px;
                 font-weight: 800;
-                color: #1F2A44;
-            }
-            #microHint {
-                color: #6C7284;
+                color: #2D3748;
+            }}
+            #microHint {{
+                color: #718096;
                 font-size: 11px;
-            }
+            }}
             """
         )
 

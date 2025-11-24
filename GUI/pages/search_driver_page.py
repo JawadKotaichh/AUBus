@@ -20,7 +20,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core import ALLOWED_ZONES, gender_display_label
+from core.constants import ALLOWED_ZONES
+from core.utils import gender_display_label
 from server_api import ServerAPI, ServerAPIError
 
 
@@ -161,11 +162,15 @@ class SearchDriverPage(QWidget):
         for row, driver in enumerate(online_items):
             rating_value = driver.get("rating")
             if rating_value is None:
-                rating_value = driver.get("avg_rating_driver", 0)
-            try:
-                rating_display = f"{float(rating_value):.1f}"
-            except (TypeError, ValueError):
-                rating_display = str(rating_value)
+                rating_value = driver.get("avg_rating_driver")
+            
+            if rating_value is not None:
+                try:
+                    rating_display = f"{float(rating_value):.1f}"
+                except (TypeError, ValueError):
+                    rating_display = str(rating_value)
+            else:
+                rating_display = "N/A"
             name_item = ro(driver.get("name") or driver.get("username") or "Unknown")
             name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, 0, name_item)
@@ -267,80 +272,79 @@ class SearchDriverPage(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def _apply_styles(self) -> None:
+        # Modern Indigo/Blue Gradient
+        gradient = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C51BF, stop:1 #667EEA)"
+
         self.setStyleSheet(
-            """
-            #driversHero {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0E1133, stop:0.35 #1E2D74, stop:0.7 #0FA6A2, stop:1 #E65C80);
+            f"""
+            #driversHero {{
+                background: {gradient};
                 border-radius: 20px;
-                border: 1px solid rgba(255,255,255,0.14);
-            }
-            #driversHero QLabel { color: #F7FAFF; background: transparent; }
-            #heroTitle {
-                font-size: 20px;
+                border: 1px solid rgba(255,255,255,0.1);
+            }}
+            #driversHero QLabel {{ color: #F7FAFF; background: transparent; }}
+            #heroTitle {{
+                font-size: 24px;
                 font-weight: 900;
                 letter-spacing: 0.3px;
                 color: #FFFFFF;
-            }
-            #heroSubtitle {
+            }}
+            #heroSubtitle {{
                 color: #E6EAF9;
-                font-size: 12.5px;
-            }
-            #heroStatus {
+                font-size: 13px;
+            }}
+            #heroStatus {{
                 color: #F3F6FF;
                 font-size: 12px;
                 font-weight: 700;
-            }
-            #heroButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
-                color: #FFFFFF;
+                background: rgba(255,255,255,0.1);
+                padding: 4px 8px;
+                border-radius: 6px;
+            }}
+            #heroButton {{
+                background: #FFFFFF;
+                color: #4C51BF;
                 border: none;
-                border-radius: 12px;
+                border-radius: 10px;
                 padding: 10px 16px;
                 font-weight: 800;
-            }
-            #heroButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            #heroButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            #sectionCard {
+            }}
+            #heroButton:hover {{
+                background: #F7FAFC;
+            }}
+            #heroButton:pressed {{
+                background: #EDF2F7;
+            }}
+            #sectionCard {{
                 background: #FFFFFF;
-                border: 1px solid #E5E9F3;
+                border: 1px solid #E2E8F0;
                 border-radius: 14px;
-            }
-            #sectionTitle {
+            }}
+            #sectionTitle {{
                 font-size: 12px;
                 font-weight: 800;
                 letter-spacing: 0.5px;
-                color: #1F2A44;
+                color: #2D3748;
                 text-transform: uppercase;
-            }
-            #sectionSubtitle {
-                color: #5D687B;
-                font-size: 11.5px;
-            }
-            QPushButton#driverAction {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
+            }}
+            #sectionSubtitle {{
+                color: #718096;
+                font-size: 12px;
+            }}
+            QPushButton#driverAction {{
+                background: {gradient};
                 color: #FFFFFF;
                 border: none;
                 border-radius: 10px;
                 padding: 8px 12px;
                 font-weight: 800;
-            }
-            QPushButton#driverAction:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            QPushButton#driverAction:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
+            }}
+            QPushButton#driverAction:hover {{
+                background-color: #5A67D8;
+            }}
+            QPushButton#driverAction:pressed {{
+                background-color: #434190;
+            }}
             """
         )
 

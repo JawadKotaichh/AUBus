@@ -20,14 +20,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from components import DriverScheduleEditor, SuggestionPopup
-from core import (
-    ALLOWED_ZONES,
-    DEFAULT_GENDER,
-    GENDER_CHOICES,
+from components.driver_schedule import DriverScheduleEditor
+from components.suggestion_popup import SuggestionPopup
+from core.constants import ALLOWED_ZONES, DEFAULT_GENDER, GENDER_CHOICES
+from core.logger import logger
+from core.utils import (
     aub_email_requirement,
     is_valid_aub_email,
-    logger,
     normalize_gender_choice,
     place_text_for_input,
     set_gender_combo_value,
@@ -450,201 +449,182 @@ class AuthPage(QWidget):
         return container
 
     def _apply_styles(self) -> None:
+        # Modern Indigo/Blue Gradient
+        gradient = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4C51BF, stop:1 #667EEA)"
+        
         self.setStyleSheet(
-            """
-            #heroPanel {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0B0E2C, stop:0.35 #1E2D74, stop:0.7 #0FA6A2, stop:1 #E65C80);
+            f"""
+            #heroPanel {{
+                background: {gradient};
                 border-radius: 22px;
                 padding: 12px;
-                border: 1px solid rgba(255,255,255,0.16);
-            }
-            #heroPanel * { color: #F9FBFF; }
-            #heroPanel QLabel {
+                border: 1px solid rgba(255,255,255,0.1);
+            }}
+            #heroPanel * {{ color: #FFFFFF; }}
+            #heroPanel QLabel {{
                 font-weight: 700;
-                letter-spacing: 0.2px;
-                color: #FDFEFF;
-            }
-            #heroCopy {
-                background: rgba(8,12,35,0.9);
-                border: 1px solid rgba(255,255,255,0.26);
+                letter-spacing: 0.3px;
+                color: #FFFFFF;
+            }}
+            #heroCopy {{
+                background: rgba(255,255,255,0.1);
+                border: 1px solid rgba(255,255,255,0.2);
                 border-radius: 16px;
                 padding: 2px;
-            }
-            #eyebrow {
-                background: rgba(255,255,255,0.14);
-                padding: 8px 12px;
-                border-radius: 12px;
-                font-size: 11px;
+            }}
+            #eyebrow {{
+                background: rgba(0,0,0,0.2);
+                padding: 6px 10px;
+                border-radius: 10px;
+                font-size: 10px;
                 font-weight: 800;
-                letter-spacing: 0.9px;
-                color: #F7FAFF;
-                border: 1px solid rgba(255,255,255,0.26);
-            }
-            #heroTitle {
-                font-size: 30px;
+                letter-spacing: 1px;
+                color: #E2E8F0;
+                text-transform: uppercase;
+            }}
+            #heroTitle {{
+                font-size: 28px;
                 font-weight: 900;
-                line-height: 1.18;
+                line-height: 1.2;
                 color: #FFFFFF;
-                padding: 4px 2px 0;
-            }
-            #heroSubtitle {
-                color: #F0F4FF;
-                font-size: 13.5px;
-                padding: 2px 0;
-            }
-            #heroBadge {
-                background: rgba(6,10,32,0.85);
-                border: 1px solid rgba(255,255,255,0.28);
+            }}
+            #heroSubtitle {{
+                color: #E2E8F0;
+                font-size: 13px;
+            }}
+            #heroBadge {{
+                background: rgba(255,255,255,0.1);
+                border: 1px solid rgba(255,255,255,0.2);
                 border-radius: 14px;
                 padding: 8px 10px;
-            }
-            #heroBadge QLabel {
-                color: #F9FBFF;
-            }
-            #heroBadgeTitle {
+            }}
+            #heroBadgeTitle {{
                 font-weight: 800;
-                font-size: 13.5px;
+                font-size: 13px;
                 color: #FFFFFF;
-                letter-spacing: 0.2px;
-            }
-            #heroBadgeSubtitle {
-                color: #F6F8FF;
-                font-size: 12.5px;
-            }
-            #statBlock {
-                background: rgba(6,10,32,0.82);
-                border: 1px solid rgba(255,255,255,0.28);
+            }}
+            #heroBadgeSubtitle {{
+                color: #E2E8F0;
+                font-size: 12px;
+            }}
+            #statBlock {{
+                background: rgba(255,255,255,0.1);
+                border: 1px solid rgba(255,255,255,0.2);
                 border-radius: 12px;
-            }
-            #statBlock QLabel {
-                color: #F9FBFF;
-            }
-            #statValue {
+            }}
+            #statValue {{
                 font-size: 16px;
                 font-weight: 900;
                 color: #FFFFFF;
-            }
-            #statLabel {
-                font-size: 12.5px;
-                color: #F6F8FF;
-            }
-            #authCard {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #FFFFFF, stop:1 #F6FAFF);
-                border: 1px solid #E1E6F0;
+            }}
+            #statLabel {{
+                font-size: 12px;
+                color: #E2E8F0;
+            }}
+            #authCard {{
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
                 border-radius: 18px;
-            }
-            #authCard QPushButton#primaryButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
+            }}
+            #authCard QPushButton#primaryButton {{
+                background-color: #5A67D8;
                 color: #FFFFFF;
                 border: none;
-                border-radius: 12px;
-                padding: 11px 18px;
+                border-radius: 10px;
+                padding: 12px;
                 font-weight: 800;
-            }
-            #authCard QPushButton#primaryButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            #authCard QPushButton#primaryButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            #authCard QPushButton#primaryButton:disabled {
-                background: #D7DAE8;
-                color: #7E829A;
-            }
-            #cardTitle {
-                font-size: 22px;
+                font-size: 11pt;
+            }}
+            #authCard QPushButton#primaryButton:hover {{
+                background-color: #4C51BF;
+            }}
+            #authCard QPushButton#primaryButton:pressed {{
+                background-color: #434190;
+            }}
+            #cardTitle {{
+                font-size: 24px;
                 font-weight: 800;
-                color: #1D2439;
-            }
-            #cardSubtitle {
-                color: #4A5468;
-                font-size: 12.5px;
-            }
-            #modeButton {
-                background: #EEF0FF;
-                border: 1px solid #D8DBF5;
-                border-radius: 12px;
+                color: #2D3748;
+            }}
+            #cardSubtitle {{
+                color: #718096;
+                font-size: 13px;
+            }}
+            #modeButton {{
+                background: #EDF2F7;
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
                 padding: 10px 16px;
-                font-weight: 800;
-                color: #2B2F52;
-            }
-            #modeButton:hover {
-                background: #E3E6FF;
-            }
-            #modeButton:checked {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
+                font-weight: 700;
+                color: #4A5568;
+            }}
+            #modeButton:hover {{
+                background: #E2E8F0;
+            }}
+            #modeButton:checked {{
+                background-color: #5A67D8;
                 border: none;
                 color: #FFFFFF;
-            }
-            #modeButton:checked:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            #modeHint {
-                color: #566074;
+            }}
+            #modeHint {{
+                color: #718096;
                 font-size: 12px;
-            }
-            #footnote {
-                color: #7A8090;
+            }}
+            #footnote {{
+                color: #A0AEC0;
                 font-size: 11px;
-            }
-            #sectionCard {
-                background: #FCFDFE;
-                border: 1px solid #E6E8EE;
-                border-radius: 14px;
-            }
-            #sectionTitle {
-                font-size: 12px;
+            }}
+            #sectionCard {{
+                background: #F7FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 12px;
+            }}
+            #sectionTitle {{
+                font-size: 11px;
                 font-weight: 800;
-                letter-spacing: 0.6px;
-                color: #4E5A6F;
+                letter-spacing: 0.5px;
+                color: #4A5568;
                 text-transform: uppercase;
-            }
-            #sectionSubtitle {
-                color: #5D687B;
+            }}
+            #sectionSubtitle {{
+                color: #718096;
                 font-size: 12px;
-            }
-            #chip {
-                background: #F4EDFF;
-                color: #4B2F89;
-                border: 1px solid #E3D8FF;
-                border-radius: 10px;
-                padding: 6px 10px;
+            }}
+            #chip {{
+                background: #EBF4FF;
+                color: #5A67D8;
+                border: 1px solid #C3DAFE;
+                border-radius: 8px;
+                padding: 4px 8px;
                 font-weight: 700;
-                font-size: 11px;
-            }
-            #textLink {
+                font-size: 10px;
+            }}
+            #textLink {{
                 background: transparent;
                 border: none;
-                color: #6C5CE7;
+                color: #5A67D8;
                 font-weight: 700;
-                text-decoration: underline;
-            }
-            #textLink:hover { color: #4029B5; }
-            #ghostButton {
+                text-decoration: none;
+            }}
+            #textLink:hover {{ text-decoration: underline; color: #4C51BF; }}
+            #ghostButton {{
                 background: transparent;
-                border: 1px dashed #6C5CE7;
-                border-radius: 10px;
-                padding: 9px 12px;
+                border: 1px dashed #5A67D8;
+                border-radius: 8px;
+                padding: 8px 12px;
                 font-weight: 700;
-                color: #4B2F89;
-            }
-            #ghostButton:hover {
-                background: rgba(108,92,231,0.08);
-            }
-            #microHint {
-                color: #6B7284;
+                color: #5A67D8;
+            }}
+            #ghostButton:hover {{
+                background: #EBF4FF;
+            }}
+            #microHint {{
+                color: #718096;
                 font-size: 11px;
-            }
-            #statusLabel {
+            }}
+            #statusLabel {{
                 font-weight: 700;
-            }
+            }}
             """
         )
 
@@ -792,7 +772,7 @@ class AuthPage(QWidget):
             self.reg_location_status.setText(
                 f"Select a location from {len(results)} match(es)."
             )
-            self.reg_location_status.setStyleSheet("color: green;")
+            self.reg_location_status.setStyleSheet("color: #1D4ED8;")
         elif triggered_by_user:
             self.reg_location_status.setText("No matching locations found.")
             self.reg_location_status.setStyleSheet("color: red;")
@@ -881,7 +861,7 @@ class AuthPage(QWidget):
         self.reg_location_status.setText(
             f"Using current location: {formatted} (Lat {lat:.5f}, Lng {lng:.5f}){provider_hint}{accuracy_hint}"
         )
-        self.reg_location_status.setStyleSheet("color: green;")
+        self.reg_location_status.setStyleSheet("color: #1D4ED8;")
 
     def _clear_register_location(self, *, clear_status: bool = True) -> None:
         self._register_location = None
@@ -904,7 +884,7 @@ class AuthPage(QWidget):
         self._register_lookup_timer.stop()
         self._register_area_populating = False
         self.reg_location_status.setText(f"Lat {latitude:.5f}, Lng {longitude:.5f}")
-        self.reg_location_status.setStyleSheet("color: green;")
+        self.reg_location_status.setStyleSheet("color: #1D4ED8;")
         self._reg_suggestion_popup.hide()
 
     def _flash_status(self, label: QLabel, text: str, color: str) -> None:

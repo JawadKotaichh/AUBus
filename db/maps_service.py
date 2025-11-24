@@ -316,6 +316,9 @@ def get_closest_online_drivers(
             min_avg_rating=min_avg,
             limit=10,
             requested_at=requested_at,
+            # Do not drop drivers just because their schedule window is unset/mismatched;
+            # automated requests should consider anyone online nearby.
+            enforce_schedule_window=False,
         )
 
         if zone_drivers_response.status != db_msg_status.OK:
@@ -376,7 +379,8 @@ def get_closest_online_drivers(
                 driver_location_state = str(
                     driver.get("driver_location_state") or ""
                 ).strip().lower()
-                if driver_location_state != required_driver_location:
+                # Only enforce when the driver explicitly set their location; otherwise allow them through
+                if driver_location_state and driver_location_state != required_driver_location:
                     continue
             origin_coords = f"{lat},{lng}"
 

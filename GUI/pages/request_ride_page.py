@@ -22,7 +22,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core import GENDER_CHOICES, REQUEST_BUTTON_STYLE, gender_display_label, logger
+from core.constants import GENDER_CHOICES, REQUEST_BUTTON_STYLE
+from core.logger import logger
+from core.utils import gender_display_label
 from server_api import ServerAPI, ServerAPIError
 
 
@@ -71,7 +73,7 @@ class RequestRidePage(QWidget):
         )
         hero_top.addWidget(self.hero_cta, 0, Qt.AlignmentFlag.AlignRight)
         hero_layout.addLayout(hero_top)
-        self.hero_status = QLabel("Status: Idle — ready to notify nearby drivers.")
+        self.hero_status = QLabel("Status: Idle - ready to notify nearby drivers.")
         self.hero_status.setObjectName("heroStatus")
         self.hero_status.setWordWrap(True)
         hero_layout.addWidget(self.hero_status)
@@ -396,12 +398,12 @@ class RequestRidePage(QWidget):
         self.auto_btn.setEnabled(True)
 
     def _update_auto_status(self, status: str, message: str, *, error: bool) -> None:
-        color = "red" if error else "#2F6B3F"
+        color = "red" if error else "#1D4ED8"
         self.auto_status_heading.setText(f"Status: {status}")
         self.auto_status_heading.setStyleSheet(f"font-weight: 600; color: {color};")
         self.auto_status_message.setText(message)
         self.auto_status_message.setStyleSheet(f"color: {color};")
-        self.hero_status.setText(f"Status: {status} — {message}")
+        self.hero_status.setText(f"Status: {status} - {message}")
 
     def _set_target_driver(self, driver: Optional[Dict[str, Any]]) -> None:
         self._last_selected_driver = driver
@@ -817,134 +819,87 @@ class RequestRidePage(QWidget):
         self.auto_time_input.setDateTime(QDateTime.currentDateTime())
         self._update_auto_status(
             "Driver selected",
-            f"Prepared direct request for {driver_name}. Adjust options then click the request button.",
+            f"Targeting {driver_name} for this ride.",
             error=False,
         )
 
     def _apply_styles(self) -> None:
+        gradient = (
+            "qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            "stop:0 #2563EB, stop:1 #4F46E5)"
+        )
         self.setStyleSheet(
-            """
-            #requestHero {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0E1133, stop:0.35 #1E2D74, stop:0.7 #0FA6A2, stop:1 #E65C80);
+            f"""
+            #requestHero {{
+                background: {gradient};
                 border-radius: 20px;
-                border: 1px solid rgba(255,255,255,0.14);
-            }
-            #requestHero QLabel { color: #F7FAFF; background: transparent; }
-            #heroTitle {
-                font-size: 20px;
+                border: 1px solid rgba(255,255,255,0.12);
+            }}
+            #requestHero QLabel {{
+                color: #F7FAFF;
+                background: transparent;
+            }}
+            #heroTitle {{
+                font-size: 24px;
                 font-weight: 900;
                 letter-spacing: 0.3px;
                 color: #FFFFFF;
-            }
-            #heroSubtitle {
+            }}
+            #heroSubtitle {{
                 color: #E6EAF9;
-                font-size: 12.5px;
-            }
-            #heroStatus {
+                font-size: 13px;
+            }}
+            #heroStatus {{
                 color: #F3F6FF;
                 font-size: 12px;
                 font-weight: 700;
-            }
-            #heroButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
-                color: #FFFFFF;
+                background: rgba(255,255,255,0.1);
+                padding: 4px 8px;
+                border-radius: 6px;
+            }}
+            #heroButton {{
+                background: #FFFFFF;
+                color: #1D4ED8;
                 border: none;
-                border-radius: 12px;
+                border-radius: 10px;
                 padding: 10px 16px;
                 font-weight: 800;
-            }
-            #heroButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            #heroButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            #sectionCard {
+            }}
+            #heroButton:hover {{
+                background: #F7FAFC;
+            }}
+            #heroButton:pressed {{
+                background: #EDF2F7;
+            }}
+            #sectionCard {{
                 background: #FFFFFF;
-                border: 1px solid #E5E9F3;
+                border: 1px solid #E2E8F0;
                 border-radius: 14px;
-            }
-            #sectionTitle {
+            }}
+            #sectionTitle {{
                 font-size: 12px;
                 font-weight: 800;
                 letter-spacing: 0.5px;
-                color: #1F2A44;
+                color: #2D3748;
                 text-transform: uppercase;
-            }
-            #sectionSubtitle {
-                color: #5D687B;
-                font-size: 11.5px;
-            }
-            QPushButton#requestRideAction {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
-                color: #FFFFFF;
-                border: none;
-                border-radius: 12px;
-                padding: 10px 14px;
-                font-weight: 800;
-            }
-            QPushButton#requestRideAction:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            QPushButton#requestRideAction:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            QPushButton#actionPrimary {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #6C5CE7, stop:1 #FF6FB1);
-                color: #FFFFFF;
-                border: none;
-                border-radius: 12px;
-                padding: 10px 14px;
-                font-weight: 800;
-            }
-            QPushButton#actionPrimary:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #7A6DF0, stop:1 #FF80BC);
-            }
-            QPushButton#actionPrimary:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #5A4ED5, stop:1 #E260A3);
-            }
-            QPushButton#actionGhost {
-                background: transparent;
-                border: 2px solid #6C5CE7;
-                color: #2B2F52;
-                border-radius: 12px;
-                padding: 9px 14px;
-                font-weight: 800;
-            }
-            QPushButton#actionGhost:hover {
-                background: rgba(108,92,231,0.08);
-            }
-            QPushButton#actionGhost:pressed {
-                background: rgba(108,92,231,0.14);
-            }
-            QListWidget#requestList {
-                border: 1px solid #E6E9F2;
-                border-radius: 12px;
-                padding: 6px;
+            }}
+            #sectionSubtitle {{
+                color: #718096;
+                font-size: 12px;
+            }}
+            QListWidget#requestList {{
                 background: #F9FBFF;
-            }
-            QListWidget#requestList::item {
+                border: 1px solid #E5E7EB;
+                border-radius: 12px;
+            }}
+            QListWidget#requestList::item {{
                 padding: 10px 8px;
                 border-radius: 10px;
                 margin: 2px 0;
-            }
-            QListWidget#requestList::item:selected {
+            }}
+            QListWidget#requestList::item:selected {{
                 background: #EEF1FF;
                 color: #1F2A44;
-            }
+            }}
             """
         )
-
-
-# Driver search ----------------------------------------------------------------
-

@@ -52,17 +52,17 @@ QPushButton#requestRideAction {
     padding: 10px 18px;
     border-radius: 8px;
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                      stop:0 #2dc98c, stop:1 #1cae76);
+                                      stop:0 #4C51BF, stop:1 #667EEA);
     color: #ffffff;
     font-weight: 600;
     border: 0px;
 }
 QPushButton#requestRideAction:hover {
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                      stop:0 #32d299, stop:1 #1fc280);
+                                      stop:0 #5A67D8, stop:1 #5465d9);
 }
 QPushButton#requestRideAction:pressed {
-    background-color: #169762;
+    background-color: #3B4ABA;
 }
 """
 
@@ -70,15 +70,15 @@ DRIVER_ROW_BUTTON_STYLE = """
 QPushButton#driverRequestBtn {
     padding: 4px 10px;
     border-radius: 6px;
-    border: 1px solid #1fb37b;
-    background-color: #e9fbf3;
-    color: #157a55;
+    border: 1px solid #4C51BF;
+    background-color: #EEF1FF;
+    color: #1D2671;
 }
 QPushButton#driverRequestBtn:hover {
-    background-color: #d9f4e8;
+    background-color: #E2E7FF;
 }
 QPushButton#driverRequestBtn:pressed {
-    background-color: #c3ebda;
+    background-color: #D6DCFF;
 }
 """
 
