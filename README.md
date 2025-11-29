@@ -10,6 +10,48 @@ Use this guide to set up a local environment, install dependencies, and run the 
 
 ---
 
+## Demo
+
+Here are some screenshots of the AUBus application:
+
+### Authentication
+
+#### Sign Up Page
+![Sign Up](demo%20images/sign%20up.png)
+*New users can create an account by providing their personal information, contact details, and setting up their credentials.*
+
+#### Log In Page
+![Log In](demo%20images/log%20in.png)
+*Existing users can securely log in to access their account and start using the AUBus ride-sharing service.*
+
+### Main Features
+
+#### Dashboard Page
+![Dashboard](demo%20images/dashboard.png)
+*The main dashboard provides an overview of the user's ride-sharing activity, including quick access to key features and recent updates.*
+
+#### Request Ride Page
+![Request Ride](demo%20images/Request%20ride.png)
+*Users can request a ride by specifying their pickup and destination locations, and the system will match them with available drivers.*
+
+#### Drivers Page
+![Drivers](demo%20images/Drivers.png)
+*Browse and view available drivers, their ratings, vehicle information, and current availability status.*
+
+#### Trips Page
+![Trips](demo%20images/Trips.png)
+*View your trip history, including past and upcoming rides, with details about routes, drivers, and trip status.*
+
+#### Chats Page
+![Chats](demo%20images/Chats.png)
+*Communicate with drivers and passengers through the built-in chat feature for real-time coordination during rides.*
+
+#### Update Profile Page
+![Update Profile](demo%20images/update%20profile.png)
+*Manage your account settings, update personal information, preferences, and profile details.*
+
+---
+
 ## 1. Prerequisites
 
 - Python **3.10+**
